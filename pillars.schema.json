@@ -1,0 +1,348 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://poolsauce.dev/schemas/pillars.schema.json",
+  "title": "Pool Sauce — Pillar Output Schema",
+  "description": "The data contract between Rōnin (shot intelligence) and the Pool Sauce overlay UI. Every shot Rōnin computes serializes to this shape. Fields marked 'overlay' drive visual elements directly.",
+  "type": "object",
+  "required": ["shot_id", "pillar_I", "pillar_II", "pillar_III"],
+  "properties": {
+    "shot_id": {
+      "type": "string",
+      "description": "Unique identifier for this shot. Used to link plan and debrief.",
+      "pattern": "^[a-z0-9_-]{3,64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when the shot was computed."
+    },
+    "table_state": {
+      "type": "object",
+      "description": "Snapshot of the table when the shot was planned. Used by the overlay to render ball positions.",
+      "properties": {
+        "cue_ball": { "$ref": "#/$defs/ball_position" },
+        "balls": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ball_on_table" }
+        },
+        "table_size_m": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "[length, width] in meters. Default: [2.54, 1.27] for 9ft."
+        }
+      }
+    },
+
+    "pillar_I": {
+      "type": "object",
+      "title": "PILLAR I — INTENTION",
+      "description": "The decision layer. No movement until intention is pure.",
+      "required": ["target", "pocket", "destination"],
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "Which ball is being killed. Ex: '6-ball', 'stripe-9'."
+        },
+        "pocket": {
+          "type": "string",
+          "enum": ["top-left", "top-right", "bottom-left", "bottom-right", "side-left", "side-right"],
+          "description": "Where the death happens."
+        },
+        "destination": {
+          "type": "object",
+          "description": "The next battlefield. Where the cue ball must land.",
+          "required": ["descriptor"],
+          "properties": {
+            "descriptor": {
+              "type": "string",
+              "description": "Human-readable landing zone. Ex: 'center-table, high side of the 7'."
+            },
+            "coordinates_m": {
+              "type": "array",
+              "items": { "type": "number" },
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "[x, y] target in meters, from bottom-left corner."
+            },
+            "tolerance_m": {
+              "type": "number",
+              "description": "Acceptable radius of A-zone in meters."
+            }
+          }
+        },
+        "intention_pure": {
+          "type": "boolean",
+          "description": "True only if target, pocket, and destination are all unambiguous."
+        }
+      }
+    },
+
+    "pillar_II": {
+      "type": "object",
+      "title": "PILLAR II — THE PATH",
+      "description": "The geometry. Overlay renders these fields as neon lines.",
+      "required": ["line_of_aim", "contact_point", "escape_route", "rails_involved", "speed_window"],
+      "properties": {
+        "line_of_aim": {
+          "type": "object",
+          "description": "Overlay: the primary aim vector.",
+          "required": ["description"],
+          "properties": {
+            "description": { "type": "string" },
+            "vector": {
+              "type": "array",
+              "items": { "type": "number" },
+              "minItems": 4,
+              "maxItems": 4,
+              "description": "[x1, y1, x2, y2] in meters — cue ball center to ghost-ball center."
+            }
+          }
+        },
+        "contact_point": {
+          "type": "object",
+          "description": "Where the cue ball meets the object ball.",
+          "required": ["description"],
+          "properties": {
+            "description": {
+              "type": "string",
+              "description": "Clock position or fractional cut. Ex: '3 o'clock, half-ball hit'."
+            },
+            "cut_angle_deg": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 90
+            },
+            "ball_fraction": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "0 = miss, 0.5 = half-ball, 1 = full hit."
+            }
+          }
+        },
+        "escape_route": {
+          "type": "object",
+          "description": "Cue ball trajectory after contact. Overlay: the 'Cue Ball Journey' line.",
+          "required": ["description"],
+          "properties": {
+            "description": { "type": "string" },
+            "path_points_m": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": { "type": "number" },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "description": "Ordered list of [x, y] waypoints. First is impact, last is rest."
+            }
+          }
+        },
+        "rails_involved": {
+          "type": "array",
+          "description": "Rails the cue ball touches, in order.",
+          "items": {
+            "type": "string",
+            "enum": ["none", "top", "bottom", "left", "right"]
+          }
+        },
+        "speed_window": {
+          "type": "object",
+          "required": ["label"],
+          "properties": {
+            "label": {
+              "type": "string",
+              "enum": ["slow", "medium", "firm", "break"]
+            },
+            "m_per_s": {
+              "type": "number",
+              "description": "Target cue ball speed at impact."
+            }
+          }
+        }
+      }
+    },
+
+    "pillar_III": {
+      "type": "object",
+      "title": "PILLAR III — THE SAUCE",
+      "description": "The recipe. Branding gold. Overlay renders these as Spin Meter.",
+      "required": ["english", "stroke", "force", "acceleration", "recipe_rationale"],
+      "properties": {
+        "english": {
+          "type": "object",
+          "required": ["sauce_term"],
+          "properties": {
+            "sauce_term": {
+              "type": "string",
+              "description": "Culinary vocabulary. Ex: 'a pinch of left', 'none'."
+            },
+            "tips_offset": {
+              "type": "number",
+              "description": "Horizontal tip offset. Negative = left, positive = right."
+            }
+          }
+        },
+        "stroke": {
+          "type": "object",
+          "required": ["type"],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["stun", "draw", "follow", "stun-follow", "stun-draw"]
+            },
+            "sauce_term": {
+              "type": "string",
+              "description": "Ex: 'a whisper of draw', 'a zest of follow', 'a spoon of stun'."
+            },
+            "tips_offset_vertical": {
+              "type": "number",
+              "description": "Vertical tip offset. Negative = below (draw), positive = above (follow)."
+            }
+          }
+        },
+        "force": {
+          "type": "string",
+          "enum": ["soft", "measured dose", "firm", "break"],
+          "description": "Culinary force vocabulary."
+        },
+        "acceleration": {
+          "type": "string",
+          "enum": ["decelerating into", "controlled", "accelerating through"],
+          "description": "Stroke character through the cue ball."
+        },
+        "recipe_rationale": {
+          "type": "string",
+          "description": "One sentence. Why this exact mix for this exact moment."
+        }
+      }
+    },
+
+    "pillar_IV": {
+      "type": "object",
+      "title": "PILLAR IV — EXECUTION",
+      "description": "Yours, warrior. Rōnin does not fill this pillar — only acknowledges it exists.",
+      "properties": {
+        "owned_by_user": {
+          "type": "boolean",
+          "const": true
+        },
+        "note": {
+          "type": "string",
+          "const": "The stance, the breath, the stillness, the strike."
+        }
+      }
+    },
+
+    "pillar_V": {
+      "type": "object",
+      "title": "PILLAR V — THE DEBRIEF",
+      "description": "Six-point review. Populated only after user reports outcome. Overlay: red/green zone shading, intended-vs-actual arrows.",
+      "required": ["zone_landing", "correct_side", "spin_review", "pace_control", "risk_zones", "mastery_one_percent"],
+      "properties": {
+        "zone_landing": {
+          "type": "object",
+          "required": ["zone"],
+          "properties": {
+            "zone": {
+              "type": "string",
+              "enum": ["A", "B", "C"]
+            },
+            "actual_coordinates_m": {
+              "type": "array",
+              "items": { "type": "number" },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "miss_vector_m": {
+              "type": "array",
+              "items": { "type": "number" },
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "[dx, dy] from intended landing. Overlay renders as an arrow."
+            }
+          }
+        },
+        "correct_side": {
+          "type": "string",
+          "enum": ["high", "low", "natural", "forced"],
+          "description": "Which side of the next object ball the cue ball landed on."
+        },
+        "spin_review": {
+          "type": "object",
+          "required": ["verdict"],
+          "properties": {
+            "verdict": {
+              "type": "string",
+              "enum": ["clean", "too much", "not enough", "wrong axis", "overcooked", "undercooked"]
+            },
+            "notes": {
+              "type": "string",
+              "description": "One-line chemistry audit."
+            }
+          }
+        },
+        "pace_control": {
+          "type": "string",
+          "enum": ["clean", "punchy", "decelerated", "floated", "stunned-late", "stunned-early"]
+        },
+        "risk_zones_crossed": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "scratch path",
+              "traffic",
+              "cluster danger",
+              "2-rail scratch route",
+              "sharp-angled carom",
+              "hooked behind blockers"
+            ]
+          }
+        },
+        "mastery_one_percent": {
+          "type": "object",
+          "required": ["excellent", "fragile"],
+          "properties": {
+            "excellent": {
+              "type": "string",
+              "description": "One mastery element. What to keep."
+            },
+            "fragile": {
+              "type": "string",
+              "description": "One improvement element. What grows next."
+            }
+          }
+        }
+      }
+    },
+
+    "doctrine_line": {
+      "type": "string",
+      "description": "Optional closing quote from The Way. At most one per output."
+    }
+  },
+
+  "$defs": {
+    "ball_position": {
+      "type": "object",
+      "required": ["x_m", "y_m"],
+      "properties": {
+        "x_m": { "type": "number" },
+        "y_m": { "type": "number" }
+      }
+    },
+    "ball_on_table": {
+      "type": "object",
+      "required": ["id", "x_m", "y_m"],
+      "properties": {
+        "id": { "type": "string", "description": "Ex: '1', '8', 'cue', 'stripe-9'." },
+        "x_m": { "type": "number" },
+        "y_m": { "type": "number" },
+        "is_target": { "type": "boolean" }
+      }
+    }
+  }
+}
