@@ -100,6 +100,34 @@
 
 ---
 
+## D-010 — Python package `poolsauce`, flat layout, dataclasses + numpy
+
+**Date:** 2026-04-20
+**Context:** Unit A needed the first concrete Python scaffold. The brief specifies Python + NumPy for the physics core and solo-builder ergonomics.
+**Decision:** Package name `poolsauce` (matches the working repo slug in BUILD_BRIEF_01). Flat layout — `poolsauce/` at the repo root, no `src/` directory. State lives in plain dataclasses with numpy arrays for vector quantities. Hatch is the build backend. Optional `dev` extras pull in pytest only.
+**Consequence:** Editable install via `pip install -e .` is the single local workflow. Adding modules is as simple as dropping a file into `poolsauce/`. No import gymnastics, no src/package split to remember six months from now. If strict package isolation or PyPI publishing ever matters, revisit then.
+
+---
+
+## D-011 — Ball state: 2D position/velocity, 3D angular velocity; coordinate convention locked
+
+**Date:** 2026-04-20
+**Context:** `BUILD_BRIEF_01` left coordinate convention and spin representation as open decisions for Unit A. Settling both now so every later unit (physics, solver, composer) types against the same model.
+**Decision:**
+
+- **Coordinate convention.** Origin at the bottom-left corner of the playing surface. `x` runs along the width (short side, default 1.27 m). `y` runs along the length (long side, default 2.54 m). `y` is up. `z` is out of the cloth, currently implicit.
+- **Position and velocity.** 2D numpy arrays, SI units. Motion is planar for v0 (the ball rests on cloth at `z = radius`). Jumps and massé arcs are deferred — when they arrive, positions and velocities broaden to 3D without reshaping anything else.
+- **Angular velocity.** 3D world-frame numpy array `[ωx, ωy, ωz]` in rad/s, stored as the primary form. Horizontal components resolve into topspin/backspin and side english relative to the ball's velocity direction; `ωz` is the vertical (massé) axis. Decomposition into Sauce vocabulary is a *view*, not a storage format. This matches how the integrator and, later, the inverse solver (D-002) will consume state.
+- **Pocket naming.** Matches `pillars.schema.json` exactly — `bottom-left`, `bottom-right`, `top-left`, `top-right`, `side-left`, `side-right`. Side pockets sit at the midpoints of the two long rails (`x = 0` and `x = width`).
+
+**Consequence:**
+
+- Schema serializers project internal state onto the schema shape (e.g., `table_size_m = [length, width]`) — internal representation optimizes for clarity, schema output optimizes for contract fidelity.
+- The integrator in Unit B consumes `angular_velocity` as a vector without first decomposing it; the Sauce translator (Unit D) owns the decomposition.
+- Widening to 3D motion is additive, not a rewrite. The angular-velocity field is already 3D.
+
+---
+
 ## Template for future decisions
 
 ```
