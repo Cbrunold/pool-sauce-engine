@@ -128,6 +128,196 @@
 
 ---
 
+## D-012 — Free-flight integrator is analytic per phase
+
+**Date:** 2026-04-20
+**Context:** Unit B.1 (free-flight physics: sliding, rolling, spin decay, no collisions) is the first cut into Unit B. The brief leaves the integration method open (Euler / RK4 / event-driven). Each free-flight phase is governed by a linear ODE with a closed-form solution, and slip decays along a fixed direction throughout the sliding phase — so there is no numerical advantage to stepping.
+**Decision:** The free-flight integrator is analytic per phase. Within a single `step_free_flight(ball, dt, table)` call, the ball resolves sliding → rolling → stopped transitions exactly at the epochs they occur, using closed-form expressions for position, velocity, and spin under each regime. Vertical spin (ωz) decays independently at rate `5 μ_sp g / (2 R)` over the full step, decoupled from horizontal phases. Rolling-constraint spin is snapped exactly at phase transitions to prevent float drift from reinjecting slip.
+**Consequence:**
+- `step_free_flight` is pure and deterministic. No timestep tuning knob; no integration error to budget against.
+- When Unit B.2 (cushion rebounds) and B.3 (ball-ball collisions) land, they become *events* that interrupt free flight at a computed time. The event loop in B.4 advances free flight analytically up to the next event, applies the event's impulse, and repeats. This is the event-driven choice implicit in D-002.
+- Massé and jump shots (out-of-plane motion) will need a separate integrator when they arrive — but they were already out of v0 scope (see D-011).
+
+---
+
+## D-013 — Cushion model is Marlow-lite, impulse-based, calibratable per table
+
+**Date:** 2026-04-20
+**Context:** Unit B.2 needs a cushion rebound model that honors the interaction-layer requirements from D-008: pace-dependent rebounds, side-english coupling, tunable per-table. A full Marlow fit requires empirical data we don't have yet. A toy "angle-in-equals-angle-out" model teaches false pool and is disqualified by the brief.
+**Decision:** `cushion_rebound` is an instantaneous impulse applied when a ball crosses the cushion contact line. The model has three elastic parameters, all on `Table`:
+- **Normal restitution** `cushion_efficiency` — scales `-v_n` straight through, constant per table.
+- **Tangential retention** `k_t(pace) = max(k_min, k_base − α · |v_n|)` — the pace-dependence lives here. High pace shortens the bank; low pace widens it.
+- **Side-english coupling** `Δv_t = c_spin · R · ω_z` plus a `side_english_loss` fraction on `ω_z`. Running english widens the rebound and partly survives the bounce; reverse english shortens it.
+
+Horizontal spin components (ωx, ωy in world frame) pass through the rebound unchanged. Their post-rebound effect — topspin becoming effective backspin after a head-on reversal, etc. — is carried naturally by free flight on the cloth. This matches the brief's "vertical spin affects path, not angle" directly.
+
+**Consequence:**
+- All five cushion parameters live on `Table`, so a fast cloth / dead rail / tournament slate can be expressed as a different `Table`. No global state; no rebuild.
+- The model is calibratable, not correct. When measurements arrive (camera rig, real table tests), the same five knobs get fit and we revise defaults; the API does not change.
+- Arbitrary cushion orientations work: `cushion_rebound` accepts any 2D unit normal, not only the four axis-aligned rails. Pocket facing chamfers and diamond-pocket slate rails become trivial later.
+- Z-axis effects (ball hopping off rails from topspin, massé shots) are deliberately out of scope — the v0 model is planar (D-011).
+
+---
+
+## D-014 — Ball-ball collision: one friction impulse drives cut and spin throw
+
+**Date:** 2026-04-20
+**Context:** Unit B.3 must produce cut-induced throw and spin-induced throw as first-class effects (D-008). Two naive options were rejected: (a) "swap velocities along line of centers" — teaches false pool; (b) separate empirical lookup tables for cut throw and spin throw — fragile, brittle to calibrate, doesn't compose.
+**Decision:** `ball_collision(a, b, table)` resolves the pair with two impulses:
+
+1. **Normal impulse** along the line of centers: `J_n = m_red · (1 + e_bb) · u_n`. Standard 1D elastic collision; handles unequal masses naturally.
+2. **Tangential impulse** along the in-plane tangent, magnitude `min(μ · |J_n|, m_eff_t · |u_t|)` — Coulomb sliding capped by the sticking impulse. The tangential slip that drives it is:
+   `u_t = (v_a − v_b) · t̂ + R_a · ω_{a,z} + R_b · ω_{b,z}`.
+
+Cut throw emerges from the `(v_a − v_b) · t̂` term; spin throw emerges from the `R · ω_z` term. No branching, no lookup, same impulse formula. The tangential impulse also applies as a z-axis torque on both balls, which produces spin transfer in the opposite sense to the cue's spin — the documented real-world behavior.
+
+Horizontal spin components (ωx, ωy) couple only to the out-of-plane slip, which the cloth absorbs as a constraint force. They are therefore inert in the collision and ride through unchanged — their post-collision effect lives in free-flight cloth physics, consistent with the planar model (D-011).
+
+**Consequence:**
+- Two new `Table` parameters: `ball_ball_restitution` (default 0.92) and `ball_ball_friction` (default 0.06). Tunable per-table for different ball conditions (chalked, humid, polished).
+- Conservation invariants are enforced by construction: linear momentum is conserved (impulse pair); relative normal velocity is reversed by exactly `-e_bb`; kinetic energy cannot increase; pure tests all pass.
+- Model is calibratable, not correct. When measurements arrive, μ_bb and e_bb get fit; the API is stable.
+
+---
+
+## D-015 — Simulator is analytic per phase, event-driven across balls
+
+**Date:** 2026-04-20
+**Context:** Unit B.4 must advance the full table state (many balls) through collisions, rebounds, and friction until rest, and expose every interaction for Pillar V auditability. Two naive approaches were rejected: (a) fixed-step Euler — accumulates error, clips events mid-step, violates D-012's analytic guarantee; (b) per-ball sequential simulation — loses the interaction between balls entirely.
+**Decision:** `simulate(state, max_time)` runs an event-driven outer loop over all balls simultaneously. Each iteration:
+
+1. Compute each moving ball's **phase end** (time to the next sliding→rolling→stop transition). This caps how far the current trajectory polynomial stays valid.
+2. Detect **cushion events** — one quadratic root per ball × rail.
+3. Detect **ball-ball events** — one quartic root per pair (from `|Δp(t)|² = (R_a + R_b)²`, with `Δp` quadratic in `t` within a phase).
+4. Pick the earliest event time `t_next` across all detections, capped by phase ends and `max_time`.
+5. Advance every ball by `t_next` through `step_free_flight` (which itself is analytic per D-012).
+6. Apply the triggering impulse (`cushion_rebound` or `ball_collision`) with a validity re-check — if a simultaneous earlier event changed the ball's state so it is now separating, the later event is skipped rather than forced.
+
+Residual vertical spin is drained after horizontal motion ceases. The returned `SimulationResult` has `final_balls`, an ordered tuple of `SimEvent`s (each with absolute time, kind, ball ids, and optional rail detail), and the total elapsed sim time.
+
+**Consequence:**
+- Trajectory polynomials are closed-form within each phase, so detection is pure root-finding — no integration error, no tunable timestep. Consistent with D-012 (analytic per phase) and D-002 (inspectable intermediate state).
+- Pockets are deliberately out of scope for B.4. A ball aimed at a corner currently bounces off the straight cushion line rather than entering the pocket. Pocket events will be added when the Pillar composer (Unit F) needs them — same machinery (circular-zone crossing = quadratic root).
+- Phase transitions are not recorded as events. They are only a validity boundary for quadratic trajectory segments; the brief's "inspectable at every collision and rebound" requirement is about impulses, not free-flight phase changes.
+- The event log is sufficient input for Pillar V chemistry audits: the cue's zone landing, which cushions were struck, which balls were touched in what order, and the state snapshots can all be reconstructed from `final_balls` plus `events`.
+
+---
+
+## D-016 — Pocket detection is a simulator event, reusing the quartic solver
+
+**Date:** 2026-04-20
+**Context:** B.4 originally shipped without pocket handling (documented in D-015). The first inverse-solver round-trip test exposed the gap: object balls aimed at corners bounced off a "cushion" where the pocket actually is, so the OB never reached a pocket center. Deferring the fix was not viable — the Pillar composer and all round-trip testing depend on knowing when a ball sinks.
+**Decision:** Pocket entry is a first-class `SimEvent` kind, detected with the same machinery as ball-ball collisions. Each pocket is a circular zone of radius `pocket_mouth_m` around its center; the time at which a ball's center crosses into the zone is a root of the same quartic (distance² reaches threshold²) the ball-ball solver already computes. When a pocket event fires, the ball is frozen at the pocket's center with zero motion, added to a `pocketed` set, and excluded from all further event detection. The `SimulationResult` exposes the pocketed IDs as a tuple.
+
+This specifically keeps cushion and pocket events competing head-to-head in the same scheduler: near a corner, the pocket time resolves before the (spurious) cushion time, so the ball sinks instead of bouncing. Away from pockets, the pocket radius is out of reach and the cushion wins — no regression in open-table dynamics.
+
+**Consequence:**
+- Pocket geometry is a single radius per table (`pocket_mouth_m`). Corner vs side pocket asymmetry and pocket facing geometry (jaws, slate drop) are not modeled. Good enough for the teaching plan; refine when measurements demand it.
+- Balls pocketed at `t < total_time` remain in `final_balls` at pocket-center with zero motion, which keeps the downstream Pillar V audit trivially readable (loop `final_balls`, cross-reference `pocketed` and the event log).
+- No new API surface on top of `SimEvent`; the existing `kind` field gained the `"pocket"` literal.
+
+---
+
+## D-017 — Unit C v0 is geometry + rolling-friction pace, direct shots only
+
+**Date:** 2026-04-20
+**Context:** The inverse problem (given intention → cue state) spans 5 DOF (cue velocity x/y, ωx/ωy/ωz) with a nonlinear forward map. A full optimizer is out of reach for v0 and, importantly, not needed to produce a valid Pillar II plan — players think in geometry and pace, not impulse vectors.
+**Decision:** `solve_direct_shot` returns a `ShotPlan` with **geometry** (ghost ball, line of aim, cut angle, contact fraction, OB direction, natural tangent line) and a **pace floor** (minimum cue speed to sink the object ball). Blockers along the aim segment are flagged. Banks, kicks, throw compensation, and cue-ball destination matching are deferred.
+
+The pace floor is derived analytically: the OB leaves the collision with no spin, so its stop distance follows the sliding-then-rolling formula from D-012. Invert that to find the post-impact OB speed required, back-propagate through the collision to find the cue speed at contact, and add the rolling-friction loss over the cue's travel (the `cue_state_for_plan` helper builds a pure-rolling cue, matching this assumption).
+
+**Consequence:**
+- `cue_state_for_plan(cue, plan, speed)` produces a simulable cue-ball state, so every plan is round-trippable: solve → simulate → verify the OB sinks. Three tests do exactly this at progressively wider cut angles.
+- Throw compensation and cue destination are the next blades in the same unit — not a rewrite. The geometry already exposes `natural_tangent_line` (the stun path), which is the foundation for cue-destination matching via speed along the tangent and spin off it.
+- Impossible cuts (≥ 90°) raise `ShotSolverError` with clear context. Blocked shots return a plan with `blockers` populated — the caller decides whether to fall back to a bank (future work) or label the shot unplayable.
+
+---
+
+## D-018 — Sauce translator: tip offsets in units of "tips", calibratable fraction
+
+**Date:** 2026-04-20
+**Context:** Unit D must translate between the Sauce vocabulary ("pinch of right", "zest of follow") and the angular velocity the forward physics consumes. The vocabulary is brand-specified; the physics is calibration-specified. Three knobs decide everything: the Sauce phrases and their numeric values (in tips), the ball-radius fraction that one tip represents, and the impulse-torque formula converting offset to ω.
+**Decision:** One "tip" is defined as `TIP_FRACTION_OF_R = 0.20` of the ball radius — an anchor that reflects real cue-tip geometry (tip radius ≈ 0.21·R on standard gear). Each Sauce phrase maps to a signed tip value: `±0.25` (pinch / zest / whisper), `±0.50` (drop), `±1.00` (healthy pour / full). `stroke_to_cue_state` applies the standard impulse-torque formula `ω = 2.5·v·b/R²` along the correct axis: `+ẑ` for horizontal offset, `ẑ × d̂` for vertical offset — so right english gives `+ω_z`, and follow gives ω aligned with the natural rolling axis for the stroke direction.
+
+The mapping is fully invertible: `angular_velocity_to_tip_offsets` reads back the stroke from an observed ω. Pillar V audits use this to describe what *actually* happened ("the stroke landed as drop of right, zest of follow") without needing to replay the stroke.
+
+**Consequence:**
+- Cue deflection ("squirt") and spin-induced cue-tip offset off line of aim are not modeled in v0. True for modest english; off by 1-3° at extreme offsets. API stays stable when the squirt model is added.
+- The three knobs — phrase-to-tips table, `TIP_FRACTION_OF_R`, impulse constant — are separate and each tunable without touching the others. Re-anchoring tips against measured data changes one constant; re-anchoring the vocabulary mapping changes the dict. No code logic changes.
+- `describe_stroke` is a nearest-phrase snap, so intermediate offsets (e.g., 0.48 tips) still map to a Sauce phrase. Rō's output never has to invent vocabulary; the brand-safe dictionary always provides a phrase.
+
+---
+
+## D-019 — Pillar schema `risk_zones` field renamed to `risk_zones_crossed`
+
+**Date:** 2026-04-20
+**Context:** The schema's `pillar_V.required` array listed `risk_zones`, but the corresponding `properties` entry was named `risk_zones_crossed`. The composer could not emit a valid document — the required name had no backing property and the backing property was not required.
+**Decision:** `required` now reads `risk_zones_crossed`, matching the property name. This is a schema typo fix, not a semantic change — nothing in the rest of the stack referred to the old name.
+**Consequence:** No API change. Documents previously drafted by hand against the old required name would have been invalid anyway.
+
+---
+
+## D-020 — Composer is the solver + sauce + simulator stitched into the Pillar schema
+
+**Date:** 2026-04-20
+**Context:** Unit F (Pillar I-III) and Unit G (Pillar V) must produce documents that validate against `pillars.schema.json`. The schema has many required fields and enum constraints; the upstream units (A-E) expose raw physics, not brand phrasing.
+**Decision:** `compose_pillar_plan` takes an `Intention`, a `SauceChoice`, and the table state; runs `solve_direct_shot`, builds a simulation from the planned stroke, and assembles the Pillar I-III fields — translating angles, distances, and sauce phrases into the schema's enums (`force`, `acceleration`, `stroke.type`). `compose_debrief` takes a completed plan and a `SimulationResult`, auto-computes zone landing and pace control from the intended-vs-actual geometry, and leaves the subjective verdicts (spin chemistry, correct side, 1% excellent/fragile) to `DebriefOverrides` with safe defaults.
+
+The schema's descriptive fields (`description` on LoA, contact, escape) are generated by small formatter helpers so Rō's voice can evolve without touching physics. The enums (force/acceleration/stroke type/pace control/correct side/spin verdict/risk zones) are validated up-front; an invalid override raises before any output is built.
+
+**Consequence:**
+- Round-trip is verified: every composed plan validates against the canonical schema, so the overlay pipeline can consume it without guessing.
+- The debrief composer is deliberately half-automated: physics-derived fields (zone, pace) are computed; subjective fields are overridable. This matches the brief's "honesty engine" — Rō does not invent verdicts.
+- Pillar IV is a literal const block. The engine will not fill it; the user owns execution.
+
+---
+
+## D-021 — CLI is the v0 front door: two subcommands, JSON-in/text-out
+
+**Date:** 2026-04-20
+**Context:** The v0 definition of done is a CLI that loads a table state from JSON, accepts an intention in text, and prints a Pillar plan — plus a debrief subcommand given a plan and outcome. No graphics, no persistence, no accounts.
+**Decision:** `poolsauce plan` and `poolsauce debrief`. The `plan` subcommand takes `--state`, `--target`, `--pocket`, `--destination`, plus optional Sauce flags (`--english`, `--stroke`, `--force`, `--acceleration`), and prints the plan in the CLAUDE.md output format (or `--json` for the raw document). The `debrief` subcommand takes `--plan` + `--state`, simulates the planned stroke forward, and prints the full plan with a Pillar V block appended. An entry point is registered in `pyproject.toml` so `pip install -e .` gives `poolsauce` on PATH.
+
+State JSON is the schema's `table_state` shape (same as the composer emits) — a ball list with `id`, `x_m`, `y_m`. Cue ball must have id `"cue"`.
+
+**Consequence:**
+- Round-trippable: plan → JSON → debrief → JSON. Every step of the ronin's routine is text-only, replayable, versionable.
+- No REPL in v0. The CLI reads args and exits. Interactive flows are a future polish layer.
+- Overlay integration is trivial when it arrives: the same JSON fed to the CLI is the exact shape the overlay UI consumes (D-003 — projection is a render target, not a product).
+
+---
+
+## D-022 — Solver compensates for cut-induced throw by default
+
+**Date:** 2026-04-20
+**Context:** D-017 shipped a direct-shot solver that returned the pure geometric ghost ball. This is wrong: real collisions throw the object ball 1-5° off the line of centers (D-014), and without compensation every cut shot misses by that margin. A Pillar II plan that ignores throw teaches false pool.
+**Decision:** `solve_direct_shot` now shifts the ghost ball to counter cut-induced throw by default. The throw magnitude is derived from the same impulse physics the collision resolver uses — sticking regime for small cuts (`tan(θ) ≤ 3.5·μ·(1+e)`), sliding regime for larger cuts where throw asymptotes to `atan(μ)` (≈ 3.4° on default gear). A two-pass fixed-point iteration settles the aim, since changing the aim slightly changes the cut angle, which slightly changes the throw.
+
+The throw direction is fixed by which side of the OB-to-pocket line the cue approaches from, determined before the fixed-point loop so it cannot oscillate. The final `ShotPlan` exposes `throw_angle_deg` (signed) so the overlay can render the correction. Compensation can be disabled with `compensate_throw=False` for diagnostics or teaching, which reproduces the old pure-geometric behavior.
+
+Speed dependence of throw (shorter contact time at high pace → less friction impulse per unit momentum → smaller throw) is deliberately NOT modeled in v0. The time-averaged impulse approximation smears it out. Calibrate when camera-rig measurements arrive.
+
+**Consequence:**
+- A round-trip sanity test shows compensation reduces the OB's post-collision angular miss by ~3° on a wide-cut shot, matching the expected `atan(μ)` correction. Straight shots are unchanged (throw is zero).
+- All other Pillar II fields (`cut_angle_deg`, `contact_fraction`, `natural_tangent_line`) reflect the *apparent* cut — the geometry the player sees from the cue-ball-to-pocket sightline. This is what they use to visualize the shot. The internal physical cut (between aim and the shifted LoC) differs by `throw_angle_deg`; the minimum cue speed uses the physical cut for correctness.
+- When we add cue-ball destination matching (the next blade), the cue's post-collision tangent line is computed from the physical LoC, so throw compensation automatically propagates into destination planning.
+
+---
+
+## D-023 — Cue-ball destination matching is a grid-search solver
+
+**Date:** 2026-04-20
+**Context:** Direct shots now account for throw (D-022), but the solver still answers only *where to aim*, not *what stroke lands the cue on the 7*. That second question is the one players actually ask: given a Pillar II aim, find the (speed, vertical english, horizontal english) that puts the cue ball at a specified destination. The forward map is nonlinear (friction phases, collision impulse, rail bounces); a clean analytic inverse is out of reach for v0.
+**Decision:** `solve_cue_destination` performs a brute-force grid search over three continuous variables — speed margin (multiple of the minimum), vertical tips, horizontal tips — simulating each candidate forward and picking the recipe whose final cue landing minimizes distance to the target. Scratches are filtered. Default grid is 7·5·5 = 175 candidates; each simulation is sub-millisecond so the full search completes in ~0.2s. The returned `CueDestinationRecipe` holds both the numeric tip offsets and the simulator-predicted landing so the caller can reproduce the shot or present it. The CLI's `plan --auto-sauce` invokes this when `--dest-xy` is supplied.
+
+**Consequence:**
+- Resolution is limited by the coarse grid. A 15 cm target is reliably found within B-zone (<30 cm); fine-grained positional control will need a local refinement pass (e.g., Nelder-Mead around the best grid point). Not added to v0 — the brand-visible output snaps to Sauce vocabulary anyway, which has ~5-10 cm quantization at typical cut angles.
+- No scipy dependency. `numpy.linspace` + loop keeps the single-dependency footprint from D-010.
+- The solver does not reason about *why* a recipe works (draw pulls cue back; follow carries it forward). It only sees final landings. If that becomes a teaching gap, a symbolic layer on top can annotate — the solver still owns the numeric truth.
+- Round-trippable: building a cue state from the recipe and simulating reproduces the solver's predicted landing exactly (pinned by test).
+
+---
+
 ## Template for future decisions
 
 ```

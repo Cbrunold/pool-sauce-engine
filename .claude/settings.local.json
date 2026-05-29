@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(///wsl.localhost/Ubuntu/home/charlie/code/**)",
+      "Read(//mnt/wsl/Ubuntu/home/charlie/code/**)",
+      "Read(//c/Users/charl/code/**)",
+      "Read(//wsl.localhost/Ubuntu/home/charlie/code/pool-sauce-engine/**)",
+      "Read(///wsl.localhost/Ubuntu/home/charlie/code/pool-sauce-engine/**)",
+      "Bash(.venv/bin/python -m pytest tests/ -v)",
+      "Bash(./.venv/bin/python --version)",
+      "Bash(wsl -d Ubuntu -- bash -c \"cd /home/charlie/code/pool-sauce-engine && ./.venv/bin/python -m pytest tests/ -v\")",
+      "Bash(wsl -d Ubuntu -- bash -c \"cd /home/charlie/code/pool-sauce-engine && ./.venv/bin/python -m pytest tests/ -v 2>&1\")",
+      "Bash(wsl -d Ubuntu -- bash -c \"cd /home/charlie/code/pool-sauce-engine && ./.venv/bin/python -m pytest tests/ 2>&1\")",
+      "Bash(wsl -d Ubuntu -- bash -c \"cd /home/charlie/code/pool-sauce-engine && ./.venv/bin/python -m pytest tests/test_debrief.py::TestDebriefValidation::test_validates_against_schema -v 2>&1\")",
+      "Bash(wsl -d *)"
+    ]
+  }
+}

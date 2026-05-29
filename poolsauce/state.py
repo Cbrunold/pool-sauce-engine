@@ -14,11 +14,19 @@ from typing import Iterable
 import numpy as np
 
 from poolsauce.constants import (
+    BALL_BALL_FRICTION,
+    BALL_BALL_RESTITUTION,
     BALL_MASS_KG,
     BALL_RADIUS_M,
     CLOTH_ROLLING_FRICTION,
     CLOTH_SLIDING_FRICTION,
+    CLOTH_SPINNING_FRICTION,
     CUSHION_EFFICIENCY,
+    CUSHION_SIDE_ENGLISH_COUPLING,
+    CUSHION_SIDE_ENGLISH_LOSS,
+    CUSHION_TANGENTIAL_PACE_FALLOFF,
+    CUSHION_TANGENTIAL_RETENTION,
+    CUSHION_TANGENTIAL_RETENTION_MIN,
     TABLE_9FT_LENGTH_M,
     TABLE_9FT_WIDTH_M,
 )
@@ -83,7 +91,15 @@ class Table:
     pocket_mouth_m: float = 0.060
     cloth_sliding_friction: float = CLOTH_SLIDING_FRICTION
     cloth_rolling_friction: float = CLOTH_ROLLING_FRICTION
+    cloth_spinning_friction: float = CLOTH_SPINNING_FRICTION
     cushion_efficiency: float = CUSHION_EFFICIENCY
+    cushion_tangential_retention: float = CUSHION_TANGENTIAL_RETENTION
+    cushion_tangential_pace_falloff: float = CUSHION_TANGENTIAL_PACE_FALLOFF
+    cushion_tangential_retention_min: float = CUSHION_TANGENTIAL_RETENTION_MIN
+    cushion_side_english_coupling: float = CUSHION_SIDE_ENGLISH_COUPLING
+    cushion_side_english_loss: float = CUSHION_SIDE_ENGLISH_LOSS
+    ball_ball_restitution: float = BALL_BALL_RESTITUTION
+    ball_ball_friction: float = BALL_BALL_FRICTION
 
     def __post_init__(self) -> None:
         if self.length_m <= 0 or self.width_m <= 0:
