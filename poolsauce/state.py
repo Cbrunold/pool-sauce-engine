@@ -27,6 +27,7 @@ from poolsauce.constants import (
     CUSHION_TANGENTIAL_PACE_FALLOFF,
     CUSHION_TANGENTIAL_RETENTION,
     CUSHION_TANGENTIAL_RETENTION_MIN,
+    SQUIRT_PIVOT_LENGTH_M,
     TABLE_9FT_LENGTH_M,
     TABLE_9FT_WIDTH_M,
 )
@@ -100,10 +101,13 @@ class Table:
     cushion_side_english_loss: float = CUSHION_SIDE_ENGLISH_LOSS
     ball_ball_restitution: float = BALL_BALL_RESTITUTION
     ball_ball_friction: float = BALL_BALL_FRICTION
+    squirt_pivot_length_m: float = SQUIRT_PIVOT_LENGTH_M
 
     def __post_init__(self) -> None:
         if self.length_m <= 0 or self.width_m <= 0:
             raise ValueError("table dimensions must be positive")
+        if self.squirt_pivot_length_m <= 0:
+            raise ValueError("squirt_pivot_length_m must be positive")
         if self.length_m < self.width_m:
             raise ValueError("length_m must be >= width_m (length is the long axis)")
         if self.pocket_mouth_m <= 0:

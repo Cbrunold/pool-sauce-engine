@@ -38,3 +38,12 @@ CUSHION_SIDE_ENGLISH_LOSS: float = 0.30
 # published values sit around 0.06 for clean polished balls.
 BALL_BALL_RESTITUTION: float = 0.92
 BALL_BALL_FRICTION: float = 0.06
+
+# Cue-ball deflection ("squirt"). Side english strikes the ball off-center,
+# and the cue's endmass throws the cue ball off the stick's aim line, toward
+# the side OPPOSITE the english. Modeled by the natural pivot length: the
+# distance behind the tip where the cue's centerline, extended, crosses the
+# actual cue-ball path. tan(squirt_angle) = tip_offset / pivot_length.
+# Typical low-deflection-to-stiff range is ~9-14 in; 11 in ≈ 0.279 m is a
+# common all-round value. Per-cue calibration knob.
+SQUIRT_PIVOT_LENGTH_M: float = 0.279

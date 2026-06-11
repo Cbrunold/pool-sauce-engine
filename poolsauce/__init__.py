@@ -10,9 +10,11 @@ from poolsauce.constants import (
     TABLE_9FT_LENGTH_M,
     TABLE_9FT_WIDTH_M,
 )
+from poolsauce.banks import BankPlan, solve_bank_shot
 from poolsauce.composer import (
     Intention,
     SauceChoice,
+    compose_bank_plan,
     compose_pillar_plan,
 )
 from poolsauce.debrief import (
@@ -42,19 +44,23 @@ from poolsauce.sauce import (
     SAUCE_STROKE,
     TIP_FRACTION_OF_R,
     SaucePrescription,
+    aim_for_cue_path,
     angular_velocity_to_tip_offsets,
     cue_state_from_sauce,
     describe_stroke,
+    squirt_angle_rad,
     stroke_to_cue_state,
     tip_offsets_from_phrases,
 )
 from poolsauce.solver import (
     CueDestinationRecipe,
+    RankedRecipe,
     ShotPlan,
     ShotSolverError,
     cue_state_for_plan,
     cue_state_from_recipe,
     solve_cue_destination,
+    solve_cue_destination_options,
     solve_direct_shot,
 )
 from poolsauce.state import POCKET_NAMES, Ball, Table, TableState
@@ -95,17 +101,21 @@ __all__ = [
     "ShotPlan",
     "ShotSolverError",
     "CueDestinationRecipe",
+    "RankedRecipe",
     "solve_direct_shot",
     "solve_cue_destination",
+    "solve_cue_destination_options",
     "cue_state_for_plan",
     "cue_state_from_recipe",
     "SAUCE_ENGLISH",
     "SAUCE_STROKE",
     "TIP_FRACTION_OF_R",
     "SaucePrescription",
+    "aim_for_cue_path",
     "angular_velocity_to_tip_offsets",
     "cue_state_from_sauce",
     "describe_stroke",
+    "squirt_angle_rad",
     "stroke_to_cue_state",
     "tip_offsets_from_phrases",
     "ZoneClassification",
@@ -114,6 +124,9 @@ __all__ = [
     "Intention",
     "SauceChoice",
     "compose_pillar_plan",
+    "compose_bank_plan",
+    "BankPlan",
+    "solve_bank_shot",
     "DebriefOverrides",
     "compose_debrief",
 ]

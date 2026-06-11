@@ -318,6 +318,73 @@ Speed dependence of throw (shorter contact time at high pace → less friction i
 
 ---
 
+## D-024 — Squirt (cue-ball deflection) is modeled; supersedes the D-017 deferral
+
+**Date:** 2026-06-11
+**Context:** D-017 deferred squirt with a noted 1–3° error at extreme english. But the product is an *aiming* tool — the moment an aim line is shown with any side english, ignoring squirt makes that line wrong by 1–3°, undermining the one thing the user must trust. Audited the engine against Dr. Dave Alciatore's technical proofs; squirt was the only gap that corrupts displayed output (massé/jump stay deferred per D-011; speed-dependent throw per D-022).
+**Decision:** Model squirt with the **natural pivot-length** model: `tan(squirt) = tip_offset / pivot_length`, default pivot 0.279 m (11 in), exposed as `Table.squirt_pivot_length_m` (per-cue calibration knob). `sauce.squirt_angle_rad` computes it; `stroke_to_cue_state` deflects the launch velocity toward the side opposite the english (opt-in via `squirt_pivot_length_m`, so existing geometric callers are unchanged). `sauce.aim_for_cue_path` inverts it. The composer aims the stick off-line by the squirt angle so the simulated cue ball still travels the solved `line_of_aim`, and exposes both `squirt_deg` and `stick_aim_vector` under `pillar_II.line_of_aim` — "aim here, the ball travels there." The 30-degree rule is validated as an emergent property (test_thirty_degree_rule: half-ball settles at 29.6°).
+**Consequence:**
+- Squirt magnitude is only as right as the pivot length, which is per-cue. Default is a sane all-round value; true accuracy waits on the table/cue calibration ritual.
+- `stroke_to_cue_state` keeps squirt **off by default** — diagnostics and teaching geometry stay pure; only the composer (live play) enables it.
+- Schema gained no `additionalProperties: false`, so the new `line_of_aim` fields validate cleanly. Overlay can later draw the stick-aim line alongside the ball path.
+- Gearing and speed-dependent throw remain deferred; massé/jump await the 3D extension (D-011).
+
+---
+
+## D-025 — Multi-rail bank solver: mirror seed, forward-sim verified
+
+**Date:** 2026-06-11
+**Context:** A direct shot can be geometrically impossible (the cut would pass through the ball) while the ball is still potable off the cushions. The engine was returning "cut angle not achievable" and stopping — wrong, when a bank exists. The D-018 deferral (multi-rail paths) became worth delivering once the user asked for a 1/2/3-rail selector.
+**Decision:** New `poolsauce/banks.py` with `solve_bank_shot(state, target, pocket, num_rails)`. Method: for each rail sequence of the requested length (no consecutive repeats), reflect the pocket across those rails (reverse contact order) to get a virtual pocket — the mirror seed for the object-ball aim. Because our cushions are NOT ideal mirrors (efficiency 0.75, pace-dependent retention, D-013), the seed is only a starting point: sweep aim (±8°, seed-outward order) × speed (3–6.6 m/s) and forward-simulate each candidate, returning the first where the OB actually drops in the intended pocket. Rail count is verified from the OB's cushion `SimEvent`s, excluding incidental grazes on the rails the pocket physically sits on (`_POCKET_RAILS`), so a corner pot off one rail reads as a "1-railer". `compose_bank_plan` wraps it into a schema-valid Pillar plan carrying the OB zig-zag under `pillar_II.bank.ob_path_points_m`; the API `/api/plan` accepts `bank_rails`; the PWA has a Direct/1/2/3 selector and draws the path.
+**Consequence:**
+- The simulator is the source of truth: a returned BankPlan is *verified to pot*, not merely computed to. Mirror geometry only seeds the search.
+- Success returns in ~0.5–1.5s (early exit on first pot). "No bank exists" is the slow path (~3–5s for 3 rails) since it must exhaust the grid — acceptable behind the "SEARCHING THE RAILS" spinner.
+- A genuine bank that deliberately uses a pocket-adjacent rail is under-counted by `_POCKET_RAILS` exclusion. Acceptable for v1; revisit if it misleads.
+- Kicks (cue ball banks off rails to reach the OB) are the sibling problem and remain unbuilt — the same mirror-seed + verify approach will apply.
+- Grid resolution bounds precision; a finer local refinement (Nelder-Mead around the potting seed) can sharpen aim later without changing the contract.
+
+---
+
+## D-026 — The composer optimizes Sauce for position, not just the pot
+
+**Date:** 2026-06-11
+**Context:** The composer defaulted Pillar III to whatever SauceChoice it was handed (stun, in the API default) and wrote a rationale about the *pot* — "no spin needed." But that says nothing about the *leave*. A user flagged a shot where stun strands the cue at the top rail 1.14 m from the intended center-left position; a touch of running left english would open the rebound. The engine already had `solve_cue_destination` (D-023) but never called it from the composer — so the spin recommendation was never earned.
+**Decision:** `compose_pillar_plan` gains `optimize_for_destination`. When set and the intention carries `destination_coordinates_m`, it runs `solve_cue_destination` to find the spin/speed that lands the cue on the leave, snaps the result to Sauce phrases via `describe_stroke`, and writes a rationale that reflects the position goal and how tight the angle is (`_position_rationale`, keyed on the solver's landing error). The API exposes `optimize_sauce`; the PWA has an "ADVISE SPIN FOR POSITION" toggle (on by default, enabled when a coordinate destination is set). On the flagged shot the optimizer returns *healthy pour of left + full follow* — confirming the player's instinct.
+**Consequence:**
+- Pillar III spin is now *derived* when a destination is given, not defaulted. The rationale is honest: it states when the leave is reachable vs when "the angle is tight" (large residual error).
+- The optimizer can recommend aggressive spin (full english, high speed) when the leave is geometrically hard; the rationale's tight-angle phrasing flags that rather than overselling. A local refinement around the grid optimum (D-023 consequence) would sharpen amounts later.
+- Direct shots without a coordinate destination still default to stun — the optimization is opt-in and coordinate-gated, so existing behavior and tests are unchanged.
+- Squirt compensation (D-024) composes with the derived english automatically: the stick re-aims for whatever side spin the optimizer picks.
+
+---
+
+## D-027 — Position optimizer favors the most replicable stroke
+
+**Date:** 2026-06-11
+**Context:** D-026 made the engine optimize spin for position, but it minimized raw landing error — so it reached for maximum english and pace to claw the last centimeters of shape. The user's correction: maximum spin and speed multiply miscues, mistrokes, and failed attempts; the engine should recommend the *most replicable* strike, and position (not the pot — "sinking is not much of a challenge if you aim properly") is the priority objective.
+**Decision:** `solve_cue_destination` selection is now two-stage. (1) Position priority: among candidates that pot the object ball (preferred over those that don't), find the best achievable landing error `E*`. (2) Replicability tiebreak: among candidates landing within `position_band_m` (default 0.06 m) of `E*`, return the one with the lowest replicability cost `spin_cost·(v²+h²) + speed_cost·max(0,margin−comfort)²`. So spin and pace are dropped unless they improve the leave by more than the band — they must earn their keep. A recommendation must pot the ball (a no-pot stroke is not a valid shot), but position drives the optimization on top of that.
+**Consequence:**
+- On the flagged shot the recommendation drops from "full pour of left + full follow" to "full follow, no english" — the left english bought ~1 cm and wasn't worth the risk. Follow + pace stay because the leave is genuinely far (the rationale says so: "the angle is tight").
+- The old "land closest by any means, even a miss" behavior is gone; a prior test that asserted position accuracy via a non-potting stroke was corrected to require the pot and reward a gentle stroke.
+- Weights (`spin_cost_weight`, `speed_cost_weight`, `comfort_margin`, `position_band_m`) are exposed for calibration. Real miscue/variance data would tune them; defaults encode "don't chase <6 cm of shape with extra spin."
+- Replicability is still a proxy (tip-offset magnitude + excess pace), not a measured miscue model. A physical miscue-limit term (spin beyond ~0.5 R tip offset) can refine it later.
+
+---
+
+## D-028 — Beta scope is 3 balls; ranked stroke options to an exact target
+
+**Date:** 2026-06-11
+**Context:** Two requests. (1) Keep the beta focused: only the 8, 9, and cue ball, placed in that order (cue last). (2) Beyond zone presets, let the player pick the *exact* spot to land the cue, then offer several strokes ranked by how repeatable they are — like cheating an object ball into a pocket, where many strokes reach the same neighborhood by different spin at different difficulty.
+**Decision:**
+- *3-ball scope:* manual placement auto-assigns the next ball in `[8, 9, cue]` per tap; the target selector offers only the placed object balls (8/9); the old 1–9 sequence UI is gone.
+- *Exact target + ranked options:* `solve_cue_destination_options` (new) simulates the speed×spin grid, keeps strokes that pot the ball and rates each by a replicability `difficulty = |v_tips| + |h_tips| + 0.6·excess_pace`, deduplicates to distinct stroke *styles* (draw/stun/follow × left/center/right), flags `makeable` (within `tolerance_m` of the target), and returns the top-N ranked most-replicable-first with labels stock/comfortable/tricky/hard. API `/api/cue-options`; the PWA has an "⊕ EXACT SPOT" tap-to-place on the table and a tappable ranked-options list that drives the strike insert.
+**Consequence:**
+- The optimizer's single-best path (D-026/D-027) and this ranked menu share the same physics; the menu surfaces the *trade-off* (easiest stroke lands at the zone edge; a slightly harder one lands dead-center) instead of hiding it behind one answer.
+- Difficulty is the same replicability proxy as D-027 (tip magnitude + pace), not a measured miscue model — same calibration caveat.
+- Scope is a UI/flow constraint, not an engine one: the physics still handles any ball set; widening the beta later is a frontend change.
+
+---
+
 ## Template for future decisions
 
 ```

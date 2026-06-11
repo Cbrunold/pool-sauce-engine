@@ -293,14 +293,31 @@ def solve_cue_destination(
     n_speed: int = 7,
     n_vertical: int = 5,
     n_horizontal: int = 5,
+    spin_cost_weight: float = 1.0,
+    speed_cost_weight: float = 0.6,
+    comfort_margin: float = 1.3,
+    position_band_m: float = 0.06,
 ) -> CueDestinationRecipe:
-    """Find a stroke recipe that lands the cue near ``target_position``.
+    """Find the most *replicable* stroke that lands the cue near
+    ``target_position`` while still potting the object ball.
 
     Runs a forward simulation for every combination in a coarse grid over
-    speed × vertical english × horizontal english, and returns the recipe
-    whose final cue landing minimizes distance to the target. Scratched
-    candidates are skipped unless every candidate scratches, in which case
-    the raised ``ShotSolverError`` names the failure.
+    speed × vertical english × horizontal english. Position is the priority
+    objective, so selection is two-stage:
+
+    1. Find the best achievable landing error ``E*`` (among potting candidates
+       if any pot, else overall).
+    2. Among candidates landing within ``position_band_m`` of ``E*``, return
+       the one with the lowest *replicability cost*
+
+           spin_cost_weight · (v_tips² + h_tips²)
+         + speed_cost_weight · max(0, margin − comfort)²
+
+       — because maximum spin and pace multiply miscues, mistrokes, and stroke
+       variance. Spin and speed must earn their keep in position (worth more
+       than ``position_band_m``) or they are dropped.
+
+    Cue scratches are always skipped.
 
     The search space is deliberately small (default 7·5·5 = 175 sims, each
     fast) — a pragmatic fit for v0. Finer grids or local refinement are
@@ -314,6 +331,9 @@ def solve_cue_destination(
         same ``state`` — the cue ball position, line of aim, and minimum
         pace all come from it.
     target_position : 2D desired resting position of the cue ball, in meters.
+    spin_cost_weight, speed_cost_weight, comfort_margin : tune how strongly
+        the search favors a repeatable stroke over the last centimeters of
+        position. Higher weights → gentler, more conservative recipes.
     """
     target = np.asarray(target_position, dtype=float).reshape(2)
     cue = state.get_ball(cue_ball_id)
@@ -328,7 +348,9 @@ def solve_cue_destination(
         horizontal_tips_range[0], horizontal_tips_range[1], n_horizontal
     )
 
-    best: CueDestinationRecipe | None = None
+    # Collect every viable (non-scratch) candidate with its error, whether it
+    # pots, and its replicability cost; select in two stages afterward.
+    candidates: list[tuple[CueDestinationRecipe, bool, float]] = []
     candidates_tried = 0
     scratches = 0
 
@@ -361,23 +383,170 @@ def solve_cue_destination(
                     b for b in result.final_balls if b.id == cue_ball_id
                 )
                 error = float(np.linalg.norm(cue_final.position - target))
-                if best is None or error < best.landing_error_m:
-                    best = CueDestinationRecipe(
-                        speed_m_s=speed,
-                        speed_margin=float(s_margin),
-                        vertical_tips=float(v_tips),
-                        horizontal_tips=float(h_tips),
-                        predicted_cue_landing_m=cue_final.position.copy(),
-                        landing_error_m=error,
-                    )
 
-    if best is None:
+                excess = max(0.0, float(s_margin) - comfort_margin)
+                replic_cost = (
+                    spin_cost_weight * (float(v_tips) ** 2 + float(h_tips) ** 2)
+                    + speed_cost_weight * excess * excess
+                )
+                recipe = CueDestinationRecipe(
+                    speed_m_s=speed,
+                    speed_margin=float(s_margin),
+                    vertical_tips=float(v_tips),
+                    horizontal_tips=float(h_tips),
+                    predicted_cue_landing_m=cue_final.position.copy(),
+                    landing_error_m=error,
+                )
+                potted = plan.target_ball_id in result.pocketed
+                candidates.append((recipe, potted, replic_cost))
+
+    if not candidates:
         raise ShotSolverError(
             f"every stroke combination scratched "
             f"({scratches}/{candidates_tried} candidates)"
         )
 
-    return best
+    # Stage 1: position is the priority — prefer pots, find the best landing.
+    potting = [c for c in candidates if c[1]]
+    pool = potting if potting else candidates
+    best_error = min(c[0].landing_error_m for c in pool)
+
+    # Stage 2: among recipes within a hair of the best leave, pick the gentlest.
+    contenders = [c for c in pool if c[0].landing_error_m <= best_error + position_band_m]
+    return min(contenders, key=lambda c: c[2])[0]
+
+
+@dataclass(frozen=True)
+class RankedRecipe:
+    """A cue-destination recipe with a difficulty ranking.
+
+    difficulty : a unitless replicability cost — spin magnitude plus excess
+        pace. Lower is more repeatable.
+    difficulty_label : "stock" | "comfortable" | "tricky" | "hard".
+    rank : 1-based, 1 = most replicable.
+    makeable : True if the cue lands within the destination tolerance.
+    """
+
+    recipe: CueDestinationRecipe
+    difficulty: float
+    difficulty_label: str
+    rank: int
+    makeable: bool
+
+
+def _difficulty_label(difficulty: float) -> str:
+    if difficulty < 0.3:
+        return "stock"
+    if difficulty < 0.7:
+        return "comfortable"
+    if difficulty < 1.3:
+        return "tricky"
+    return "hard"
+
+
+def solve_cue_destination_options(
+    state: TableState,
+    plan: ShotPlan,
+    target_position: np.ndarray,
+    *,
+    cue_ball_id: str = "cue",
+    tolerance_m: float = 0.18,
+    max_options: int = 6,
+    speed_margin_range: tuple[float, float] = (1.05, 2.5),
+    n_speed: int = 7,
+    n_vertical: int = 5,
+    n_horizontal: int = 5,
+    comfort_margin: float = 1.3,
+) -> list[RankedRecipe]:
+    """Offer several distinct strokes that land the cue near an exact target,
+    ranked by how replicable they are (most repeatable first).
+
+    Like solving for an object ball you can cheat into the pocket: many strokes
+    reach the same neighborhood by different spin/path, at different difficulty.
+    This simulates the grid, keeps strokes that pot the ball and land within
+    ``tolerance_m`` of the target, deduplicates to distinct stroke *styles*
+    (draw/stun/follow × left/center/right), and ranks them by difficulty.
+
+    Returns up to ``max_options`` RankedRecipe entries. If nothing lands within
+    tolerance, returns the closest reachable strokes flagged ``makeable=False``.
+    Raises ``ShotSolverError`` only if every candidate scratches.
+    """
+    target = np.asarray(target_position, dtype=float).reshape(2)
+    cue = state.get_ball(cue_ball_id)
+
+    speeds_margin = np.linspace(speed_margin_range[0], speed_margin_range[1], n_speed)
+    verts = np.linspace(-1.0, 1.0, n_vertical)
+    horizs = np.linspace(-1.0, 1.0, n_horizontal)
+
+    # style key -> best (lowest-difficulty) candidate for that stroke style
+    by_style: dict[tuple[int, int], tuple[CueDestinationRecipe, float, bool]] = {}
+    any_candidate = False
+
+    for s_margin in speeds_margin:
+        speed = float(s_margin) * plan.min_cue_speed_m_s
+        for v_tips in verts:
+            for h_tips in horizs:
+                cue_after = stroke_to_cue_state(
+                    cue=cue, direction=plan.line_of_aim, speed_m_s=speed,
+                    vertical_tips=float(v_tips), horizontal_tips=float(h_tips),
+                )
+                sim_state = TableState(
+                    table=state.table,
+                    balls=[cue_after if b.id == cue_ball_id else b for b in state.balls],
+                )
+                result = simulate(sim_state)
+                if cue_ball_id in result.pocketed:
+                    continue  # scratch
+                # A recommended stroke must pot the object ball.
+                if plan.target_ball_id not in result.pocketed:
+                    continue
+                any_candidate = True
+                cue_final = next(b for b in result.final_balls if b.id == cue_ball_id)
+                error = float(np.linalg.norm(cue_final.position - target))
+                excess = max(0.0, float(s_margin) - comfort_margin)
+                difficulty = abs(float(v_tips)) + abs(float(h_tips)) + 0.6 * excess
+                makeable = error <= tolerance_m
+
+                recipe = CueDestinationRecipe(
+                    speed_m_s=speed, speed_margin=float(s_margin),
+                    vertical_tips=float(v_tips), horizontal_tips=float(h_tips),
+                    predicted_cue_landing_m=cue_final.position.copy(),
+                    landing_error_m=error,
+                )
+                # Stroke style: vertical bucket × horizontal bucket.
+                vk = -1 if v_tips <= -0.375 else (1 if v_tips >= 0.375 else 0)
+                hk = -1 if h_tips <= -0.375 else (1 if h_tips >= 0.375 else 0)
+                key = (vk, hk)
+                prev = by_style.get(key)
+                # Prefer makeable; then lower difficulty; then lower error.
+                cand_rank = (not makeable, difficulty, error)
+                if prev is None:
+                    by_style[key] = (recipe, difficulty, makeable)
+                else:
+                    prev_rank = (
+                        not prev[2], prev[1], prev[0].landing_error_m
+                    )
+                    if cand_rank < prev_rank:
+                        by_style[key] = (recipe, difficulty, makeable)
+
+    if not any_candidate:
+        raise ShotSolverError("no stroke pots the ball without scratching")
+
+    entries = list(by_style.values())
+    # Makeable first, then by difficulty.
+    entries.sort(key=lambda e: (not e[2], e[1], e[0].landing_error_m))
+    entries = entries[:max_options]
+
+    return [
+        RankedRecipe(
+            recipe=rec,
+            difficulty=diff,
+            difficulty_label=_difficulty_label(diff),
+            rank=i + 1,
+            makeable=mk,
+        )
+        for i, (rec, diff, mk) in enumerate(entries)
+    ]
 
 
 def cue_state_from_recipe(

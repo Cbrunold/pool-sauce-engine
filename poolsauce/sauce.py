@@ -72,19 +72,66 @@ class SaucePrescription:
     vertical_tips: float
 
 
+def squirt_angle_rad(
+    horizontal_tips: float,
+    radius_m: float,
+    pivot_length_m: float,
+) -> float:
+    """Cue-ball deflection angle (squirt) for a side-english offset.
+
+    Pivot-length model: the cue ball leaves along a line that, projected back,
+    crosses the stick's centerline a distance ``pivot_length_m`` behind contact.
+    With tip offset ``b`` (meters), ``tan(squirt) = b / pivot_length``.
+
+    Sign follows the offset: positive (right english) returns a positive angle,
+    and the cue ball deflects to the *opposite* side of the english — handled by
+    the rotation sense in ``stroke_to_cue_state`` / ``aim_for_cue_path``.
+    """
+    b_horiz = horizontal_tips * TIP_FRACTION_OF_R * radius_m
+    return math.atan2(b_horiz, pivot_length_m)
+
+
+def aim_for_cue_path(
+    path_direction: np.ndarray,
+    horizontal_tips: float,
+    radius_m: float,
+    pivot_length_m: float,
+) -> np.ndarray:
+    """Stick aim direction that makes the cue ball travel ``path_direction``.
+
+    Squirt deflects the ball off the stick line, so to *send* the ball down a
+    desired path the stick must aim to the english side by the squirt angle.
+    Returns the unit stick-aim vector. Inverse of the deflection applied in
+    ``stroke_to_cue_state``.
+    """
+    path_direction = np.asarray(path_direction, dtype=float).reshape(2)
+    theta = squirt_angle_rad(horizontal_tips, radius_m, pivot_length_m)
+    # stroke deflects velocity by +theta (CCW); pre-rotate the aim by -theta.
+    c, s = math.cos(-theta), math.sin(-theta)
+    return np.array([
+        c * path_direction[0] - s * path_direction[1],
+        s * path_direction[0] + c * path_direction[1],
+    ])
+
+
 def stroke_to_cue_state(
     cue: Ball,
     direction: np.ndarray,
     speed_m_s: float,
     vertical_tips: float = 0.0,
     horizontal_tips: float = 0.0,
+    squirt_pivot_length_m: float | None = None,
 ) -> Ball:
     """Build the cue-ball state from a stroke specification.
 
-    Linear velocity equals ``speed_m_s · direction``. Angular velocity is
-    computed from the impulse-torque formula. Cue deflection ("squirt") and
-    throw-off from the stick are not modeled — true only for modest offsets;
-    extreme english can skew the line of aim by 1-3° in real shots.
+    ``direction`` is the *stick aim* (the cue's centerline). Angular velocity is
+    computed from the impulse-torque formula relative to that line.
+
+    Squirt: when ``squirt_pivot_length_m`` is given and side english is present,
+    the launch velocity is deflected off the stick line by the squirt angle,
+    toward the side opposite the english (the endmass effect). When it is None
+    (default), squirt is not applied — the velocity follows ``direction`` exactly,
+    preserving the geometric/teaching behavior.
     """
     direction = np.asarray(direction, dtype=float).reshape(2)
     d_norm = float(np.linalg.norm(direction))
@@ -94,7 +141,6 @@ def stroke_to_cue_state(
         raise ValueError("speed must be non-negative")
 
     R = cue.radius_m
-    v_2d = direction * speed_m_s
 
     b_vert = vertical_tips * TIP_FRACTION_OF_R * R
     b_horiz = horizontal_tips * TIP_FRACTION_OF_R * R
@@ -103,8 +149,20 @@ def stroke_to_cue_state(
     omega_vert_mag = 2.5 * speed_m_s * b_vert / (R * R)
     omega_z = 2.5 * speed_m_s * b_horiz / (R * R)
 
-    # Vertical-english axis: ẑ × d̂ (90° CCW of d̂ in the plane).
+    # Vertical-english axis: ẑ × d̂ (90° CCW of d̂ in the plane). Computed from
+    # the stick line, which is what sets the spin axes.
     vertical_axis_2d = np.array([-direction[1], direction[0]])
+
+    # Velocity direction — deflected by squirt if requested.
+    vel_dir = direction
+    if squirt_pivot_length_m is not None and horizontal_tips != 0.0:
+        theta = squirt_angle_rad(horizontal_tips, R, squirt_pivot_length_m)
+        c, s = math.cos(theta), math.sin(theta)
+        vel_dir = np.array([
+            c * direction[0] - s * direction[1],
+            s * direction[0] + c * direction[1],
+        ])
+    v_2d = vel_dir * speed_m_s
 
     w = np.zeros(3)
     w[:2] = omega_vert_mag * vertical_axis_2d
@@ -126,11 +184,14 @@ def cue_state_from_sauce(
     speed_m_s: float,
     english: str = "none",
     stroke: str = "spoon of stun",
+    squirt_pivot_length_m: float | None = None,
 ) -> Ball:
     """Build the cue-ball state from Sauce phrases.
 
     Thin wrapper over ``stroke_to_cue_state`` that looks up the tip offsets
-    from the Sauce vocabulary. Unknown phrases raise ``KeyError``.
+    from the Sauce vocabulary. Unknown phrases raise ``KeyError``. Pass
+    ``squirt_pivot_length_m`` (e.g. ``table.squirt_pivot_length_m``) to apply
+    cue-ball deflection.
     """
     vertical_tips, horizontal_tips = tip_offsets_from_phrases(english, stroke)
     return stroke_to_cue_state(
@@ -139,6 +200,7 @@ def cue_state_from_sauce(
         speed_m_s=speed_m_s,
         vertical_tips=vertical_tips,
         horizontal_tips=horizontal_tips,
+        squirt_pivot_length_m=squirt_pivot_length_m,
     )
 
 

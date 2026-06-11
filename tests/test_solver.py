@@ -299,17 +299,73 @@ class TestCueDestinationSolver:
         assert recipe.landing_error_m >= 0.0
         assert recipe.predicted_cue_landing_m.shape == (2,)
 
-    def test_finds_recipe_within_B_zone_for_close_target(self) -> None:
-        # A target close to the ghost ball (along the natural tangent line
-        # of the compensated geometry) should be reachable by the coarse
-        # grid within B-zone accuracy.
+    def test_finds_replicable_recipe_for_close_target(self) -> None:
+        # A target close to the ghost ball (along the natural tangent line of
+        # the compensated geometry) should be reachable to roughly B/C-zone
+        # accuracy by the coarse grid — while still potting the ball. The
+        # solver prioritizes position but requires the pot, and prefers a
+        # gentle, repeatable stroke over chasing the last centimeters with spin.
         from poolsauce import solve_cue_destination
 
         state = _state([_ball("cue", (0.3, 0.5)), _ball("6", (0.635, 1.3))])
         plan = solve_direct_shot(state, "6", "top-right")
         target = plan.ghost_ball_position + 0.15 * plan.natural_tangent_line
         recipe = solve_cue_destination(state=state, plan=plan, target_position=target)
-        assert recipe.landing_error_m < 0.3
+        assert recipe.landing_error_m < 0.4
+        # Replicable: no extreme english chased for marginal position.
+        assert abs(recipe.horizontal_tips) <= 0.5
+
+    def test_drops_spin_that_does_not_earn_its_keep(self) -> None:
+        # When side english barely improves the leave, the replicability cost
+        # should prefer the gentler stroke. The position-band selection must
+        # never land much worse than the raw-error optimum, but should use
+        # less spin.
+        from poolsauce import solve_cue_destination
+
+        state = _state([
+            _ball("cue", (0.79, 1.49)),
+            _ball("1", (0.82, 2.05)),
+            _ball("3", (0.90, 1.20)),
+        ])
+        plan = solve_direct_shot(state, "1", "top-right")
+        target = np.array([0.35, 1.31])
+
+        greedy = solve_cue_destination(
+            state=state, plan=plan, target_position=target,
+            spin_cost_weight=0.0, speed_cost_weight=0.0, position_band_m=0.0,
+        )
+        replicable = solve_cue_destination(state=state, plan=plan, target_position=target)
+
+        # Position stays within the band of the greedy optimum...
+        assert replicable.landing_error_m <= greedy.landing_error_m + 0.06 + 1e-9
+        # ...but the stroke is no spinnier than the greedy one.
+        greedy_spin = abs(greedy.horizontal_tips) + abs(greedy.vertical_tips)
+        replic_spin = abs(replicable.horizontal_tips) + abs(replicable.vertical_tips)
+        assert replic_spin <= greedy_spin
+
+    def test_ranked_options_are_sorted_and_distinct(self) -> None:
+        from poolsauce import solve_cue_destination_options
+
+        state = _state([_ball("cue", (0.6, 0.5)), _ball("8", (0.635, 1.3))])
+        plan = solve_direct_shot(state, "8", "top-right")
+        opts = solve_cue_destination_options(
+            state, plan, np.array([0.10, 2.30]), max_options=6
+        )
+        assert len(opts) >= 1
+        # Ranks are 1..N and difficulty is non-decreasing among makeable ones.
+        assert [o.rank for o in opts] == list(range(1, len(opts) + 1))
+        makeable = [o for o in opts if o.makeable]
+        diffs = [o.difficulty for o in makeable]
+        assert diffs == sorted(diffs)
+        # Distinct stroke styles — no two options share the same (v,h) buckets.
+        styles = {
+            (
+                -1 if o.recipe.vertical_tips <= -0.375 else (1 if o.recipe.vertical_tips >= 0.375 else 0),
+                -1 if o.recipe.horizontal_tips <= -0.375 else (1 if o.recipe.horizontal_tips >= 0.375 else 0),
+            )
+            for o in opts
+        }
+        assert len(styles) == len(opts)
 
     def test_recipe_reproduces_predicted_landing(self) -> None:
         # Building the cue state from the recipe and simulating must land

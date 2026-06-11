@@ -15,6 +15,7 @@ Pillar V: absent here. Produced by `compose_debrief` in a later unit.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,7 +25,11 @@ from poolsauce.physics import SimulationResult, simulate
 from poolsauce.sauce import (
     SAUCE_ENGLISH,
     SAUCE_STROKE,
+    aim_for_cue_path,
     cue_state_from_sauce,
+    describe_stroke,
+    squirt_angle_rad,
+    stroke_to_cue_state,
     tip_offsets_from_phrases,
 )
 from poolsauce.solver import ShotPlan, solve_direct_shot
@@ -54,6 +59,10 @@ class SauceChoice:
     acceleration: str = "controlled"
     recipe_rationale: str | None = None
     speed_margin: float = 1.15
+    # Manual spin override (raw tip offsets). When set, these take precedence
+    # over the english/stroke phrases — the player dialed the spin directly.
+    vertical_tips: float | None = None
+    horizontal_tips: float | None = None
 
 
 def compose_pillar_plan(
@@ -65,8 +74,14 @@ def compose_pillar_plan(
     cue_ball_id: str = "cue",
     timestamp: str | None = None,
     doctrine_line: str | None = None,
+    optimize_for_destination: bool = False,
 ) -> dict[str, Any]:
     """Build a full Pillar I-III document.
+
+    If ``optimize_for_destination`` is set and the intention carries
+    destination coordinates, the Sauce is *derived* by the cue-destination
+    solver (the spin/speed that lands the cue on the leave) rather than taken
+    from the caller's ``sauce``. The recipe rationale then earns its spin.
 
     Raises
     ------
@@ -91,14 +106,63 @@ def compose_pillar_plan(
         cue_ball_id=cue_ball_id,
     )
 
+    # Position optimization — let the engine recommend the spin/speed that
+    # lands the cue on the stated destination, instead of defaulting to stun.
+    optimized_note: str | None = None
+    if optimize_for_destination and intention.destination_coordinates_m is not None:
+        from poolsauce.solver import solve_cue_destination
+
+        target = np.asarray(intention.destination_coordinates_m, dtype=float)
+        recipe = solve_cue_destination(state, plan, target, cue_ball_id=cue_ball_id)
+        presc = describe_stroke(recipe.vertical_tips, recipe.horizontal_tips)
+        sauce = SauceChoice(
+            english=presc.english,
+            stroke=presc.stroke,
+            force=sauce.force,
+            acceleration=sauce.acceleration,
+            recipe_rationale=None,  # replaced by the derived rationale below
+            speed_margin=recipe.speed_margin,
+        )
+        optimized_note = _position_rationale(presc, recipe.landing_error_m)
+
     speed = plan.min_cue_speed_m_s * sauce.speed_margin
     cue = state.get_ball(cue_ball_id)
-    cue_after_stroke = cue_state_from_sauce(
+
+    # Effective tips: manual override (player dialed the spin directly) wins
+    # over the english/stroke phrases. Display labels come from the tips.
+    manual_spin = (
+        sauce.vertical_tips is not None or sauce.horizontal_tips is not None
+    )
+    if manual_spin:
+        vertical_tips = sauce.vertical_tips if sauce.vertical_tips is not None else 0.0
+        horizontal_tips = sauce.horizontal_tips if sauce.horizontal_tips is not None else 0.0
+        presc = describe_stroke(vertical_tips, horizontal_tips)
+        english_label, stroke_label = presc.english, presc.stroke
+    else:
+        vertical_tips, horizontal_tips = tip_offsets_from_phrases(
+            english=sauce.english, stroke=sauce.stroke
+        )
+        english_label, stroke_label = sauce.english, sauce.stroke
+
+    # Squirt: side english deflects the cue ball off the stick line. To send
+    # the ball down the solved line_of_aim, the stick must aim off-line by the
+    # squirt angle; the deflected launch then lands the ball back on the line.
+    pivot_m = state.table.squirt_pivot_length_m
+    stick_aim = aim_for_cue_path(
+        plan.line_of_aim, horizontal_tips, cue.radius_m, pivot_m
+    )
+    stick_aim = stick_aim / float(np.linalg.norm(stick_aim))
+    squirt_deg = math.degrees(
+        squirt_angle_rad(horizontal_tips, cue.radius_m, pivot_m)
+    )
+
+    cue_after_stroke = stroke_to_cue_state(
         cue=cue,
-        direction=plan.line_of_aim,
+        direction=stick_aim,
         speed_m_s=speed,
-        english=sauce.english,
-        stroke=sauce.stroke,
+        vertical_tips=vertical_tips,
+        horizontal_tips=horizontal_tips,
+        squirt_pivot_length_m=pivot_m,
     )
 
     sim_state = TableState(
@@ -112,9 +176,6 @@ def compose_pillar_plan(
 
     rails = _rails_touched_by(sim_result, cue_ball_id)
 
-    vertical_tips, horizontal_tips = tip_offsets_from_phrases(
-        english=sauce.english, stroke=sauce.stroke
-    )
     stroke_type = _stroke_type(vertical_tips)
 
     output: dict[str, Any] = {
@@ -126,17 +187,19 @@ def compose_pillar_plan(
             speed_m_s=speed,
             rails=rails,
             cue_final_position=_cue_final_position(sim_result, cue_ball_id),
+            stick_aim=stick_aim,
+            squirt_deg=squirt_deg,
         ),
         "pillar_III": _build_pillar_III(
-            english=sauce.english,
+            english=english_label,
             horizontal_tips=horizontal_tips,
-            stroke=sauce.stroke,
+            stroke=stroke_label,
             vertical_tips=vertical_tips,
             stroke_type=stroke_type,
             force=sauce.force,
             acceleration=sauce.acceleration,
-            recipe_rationale=sauce.recipe_rationale or _default_rationale(
-                plan=plan, english=sauce.english, stroke=sauce.stroke
+            recipe_rationale=optimized_note or sauce.recipe_rationale or _default_rationale(
+                plan=plan, english=english_label, stroke=stroke_label
             ),
         ),
         "pillar_IV": {
@@ -148,6 +211,97 @@ def compose_pillar_plan(
 
     if timestamp is not None:
         output["timestamp"] = timestamp
+    if doctrine_line is not None:
+        output["doctrine_line"] = doctrine_line
+
+    return output
+
+
+def compose_bank_plan(
+    state: TableState,
+    shot_id: str,
+    intention: Intention,
+    num_rails: int,
+    *,
+    cue_ball_id: str = "cue",
+    doctrine_line: str | None = None,
+) -> dict[str, Any]:
+    """Build a Pillar I-III plan for a verified multi-rail bank shot.
+
+    Uses the bank solver (mirror seed + forward-sim verification). The plan
+    carries the object ball's bank path under ``pillar_II.bank`` so the overlay
+    can draw the zig-zag. Raises ``ShotSolverError`` if no bank pots.
+    """
+    from poolsauce.banks import solve_bank_shot  # local import avoids cycle
+
+    bank = solve_bank_shot(
+        state, intention.target_ball_id, intention.pocket, num_rails,
+        cue_ball_id=cue_ball_id,
+    )
+
+    cue = state.get_ball(cue_ball_id)
+    rail_seq = bank.rail_sequence
+    contact_fraction = 1.0 - math.sin(math.radians(bank.cut_angle_deg))
+
+    pillar_II: dict[str, Any] = {
+        "line_of_aim": {
+            "description": (
+                f"{num_rails}-rail bank off the {' then '.join(rail_seq)} rail"
+                f" — aim the {intention.target_ball_id} at the mirror"
+            ),
+            "vector": [
+                float(cue.position[0]), float(cue.position[1]),
+                float(bank.ghost_ball_position[0]),
+                float(bank.ghost_ball_position[1]),
+            ],
+        },
+        "contact_point": {
+            "description": f"{bank.cut_angle_deg:.0f}° cut to start the bank",
+            "cut_angle_deg": bank.cut_angle_deg,
+            "ball_fraction": contact_fraction,
+        },
+        "escape_route": {
+            "description": f"object ball banks: {' then '.join(rail_seq)}",
+            "path_points_m": [
+                [float(bank.ghost_ball_position[0]), float(bank.ghost_ball_position[1])],
+            ],
+        },
+        "rails_involved": list(rail_seq),
+        "speed_window": {
+            "label": _speed_label(bank.cue_speed_m_s),
+            "m_per_s": bank.cue_speed_m_s,
+        },
+        # Bank-specific: the object ball's zig-zag path for the overlay.
+        "bank": {
+            "num_rails": num_rails,
+            "rail_sequence": list(rail_seq),
+            "ob_path_points_m": [list(p) for p in bank.ob_path_points_m],
+        },
+    }
+
+    output: dict[str, Any] = {
+        "shot_id": shot_id,
+        "pillar_I": _build_pillar_I(intention),
+        "pillar_II": pillar_II,
+        "pillar_III": _build_pillar_III(
+            english="none",
+            horizontal_tips=0.0,
+            stroke="spoon of stun",
+            vertical_tips=0.0,
+            stroke_type="stun",
+            force="firm",
+            acceleration="accelerating through",
+            recipe_rationale=(
+                f"firm center-ball to carry the {intention.target_ball_id} "
+                f"through {num_rails} rail(s) — banks need pace"
+            ),
+        ),
+        "pillar_IV": {
+            "owned_by_user": True,
+            "note": "The stance, the breath, the stillness, the strike.",
+        },
+        "table_state": _build_table_state(state, intention.target_ball_id, cue_ball_id),
+    }
     if doctrine_line is not None:
         output["doctrine_line"] = doctrine_line
 
@@ -174,16 +328,33 @@ def _build_pillar_II(
     speed_m_s: float,
     rails: tuple[str, ...],
     cue_final_position: np.ndarray,
+    stick_aim: np.ndarray | None = None,
+    squirt_deg: float = 0.0,
 ) -> dict[str, Any]:
+    loa: dict[str, Any] = {
+        "description": _loa_description(plan),
+        "vector": [
+            float(cue_position[0]), float(cue_position[1]),
+            float(plan.ghost_ball_position[0]),
+            float(plan.ghost_ball_position[1]),
+        ],
+    }
+    # Squirt: with side english the stick aims off the ball's path. Expose the
+    # stick-aim line and the deflection so the overlay can show both — "aim
+    # here, the ball travels there." Only meaningful when |squirt| is non-trivial.
+    if stick_aim is not None and abs(squirt_deg) > 1e-6:
+        cue_to_ghost = float(np.hypot(
+            plan.ghost_ball_position[0] - cue_position[0],
+            plan.ghost_ball_position[1] - cue_position[1],
+        ))
+        loa["squirt_deg"] = squirt_deg
+        loa["stick_aim_vector"] = [
+            float(cue_position[0]), float(cue_position[1]),
+            float(cue_position[0] + stick_aim[0] * cue_to_ghost),
+            float(cue_position[1] + stick_aim[1] * cue_to_ghost),
+        ]
     return {
-        "line_of_aim": {
-            "description": _loa_description(plan),
-            "vector": [
-                float(cue_position[0]), float(cue_position[1]),
-                float(plan.ghost_ball_position[0]),
-                float(plan.ghost_ball_position[1]),
-            ],
-        },
+        "line_of_aim": loa,
         "contact_point": {
             "description": _contact_description(plan),
             "cut_angle_deg": plan.cut_angle_deg,
@@ -320,6 +491,26 @@ def _speed_label(speed_m_s: float) -> str:
     if speed_m_s < 3.5:
         return "firm"
     return "break"
+
+
+def _position_rationale(presc, landing_error_m: float) -> str:
+    """Rationale for a destination-optimized recipe — earns its spin."""
+    bits: list[str] = []
+    if presc.stroke != "spoon of stun":
+        bits.append(presc.stroke)
+    if presc.english != "none":
+        bits.append(presc.english)
+    if not bits:
+        lead = "center-ball stun"
+    else:
+        lead = " with ".join(bits)
+    if landing_error_m <= 0.10:
+        tail = "lands the cue on the leave"
+    elif landing_error_m <= 0.30:
+        tail = "carries the cue near the leave"
+    else:
+        tail = "is the closest the cue gets to the leave — the angle is tight"
+    return f"{lead} — {tail}"
 
 
 def _default_rationale(plan: ShotPlan, english: str, stroke: str) -> str:
