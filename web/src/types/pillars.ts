@@ -62,6 +62,7 @@ export interface PlanRequest {
   shot_id?: string
   bank_rails?: number      // 0 = direct; 1/2/3 = forced bank
   optimize_sauce?: boolean // derive spin/speed for the leave
+  cut_offset_deg?: number  // cheat the pocket (± degrees)
 }
 
 export interface DebriefOverridesIn {

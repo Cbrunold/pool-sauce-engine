@@ -87,6 +87,7 @@ def plan(req: PlanRequest) -> PlanResponse:
             cue_ball_id=req.cue_ball_id,
             doctrine_line=req.doctrine_line,
             optimize_for_destination=req.optimize_sauce,
+            cut_offset_deg=req.cut_offset_deg,
         )
         return PlanResponse(plan=result)
     except ShotSolverError as exc:

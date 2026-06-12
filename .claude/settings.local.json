@@ -24,7 +24,8 @@
       "Bash(ls -la \"/mnt/c/Users/charl/OneDrive/Desktop/Pool Sauce Engine/graphics \\(Source - Poolshot\\)\" 2>&1 | head -40)",
       "WebFetch(domain:drdavepoolinfo.com)",
       "Bash(ls -la /home/charlie/code/ 2>/dev/null || ls -la \"\\\\\\\\wsl.localhost\\\\Ubuntu\\\\home\\\\charlie\\\\code\\\\\" 2>/dev/null || pwd)",
-      "Bash(grep -n \"natural.?roll\\\\|rolling.?constraint\\\\|no.?slip\\\\|ω_x\\\\|ω_y\\\\|ω_z\" //wsl.localhost/Ubuntu/home/charlie/code/pool-sauce-engine/poolsauce/physics.py | head -40)"
+      "Bash(grep -n \"natural.?roll\\\\|rolling.?constraint\\\\|no.?slip\\\\|ω_x\\\\|ω_y\\\\|ω_z\" //wsl.localhost/Ubuntu/home/charlie/code/pool-sauce-engine/poolsauce/physics.py | head -40)",
+      "PowerShell(try { \"phone-path: \" + \\(Invoke-WebRequest -Uri 'http://192.168.1.29:5173' -UseBasicParsing -TimeoutSec 6\\).StatusCode } catch { \"phone-path FAILED: $\\($_.Exception.Message\\)\" })"
     ]
   }
 }

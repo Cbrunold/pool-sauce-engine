@@ -86,6 +86,7 @@ def solve_direct_shot(
     cue_ball_id: str = "cue",
     *,
     compensate_throw: bool = True,
+    aim_offset_deg: float = 0.0,
 ) -> ShotPlan:
     """Compute the direct-shot Pillar II plan.
 
@@ -120,6 +121,10 @@ def solve_direct_shot(
     if ob_to_pocket_dist < 1e-9:
         raise ShotSolverError(f"object ball is already in {pocket!r}")
     ob_dir = ob_to_pocket / ob_to_pocket_dist
+    # Cheat the pocket: rotate the intended object-ball direction by a small
+    # offset. 0 aims at pocket center; ± sends the OB to either jaw and beyond.
+    if aim_offset_deg != 0.0:
+        ob_dir = _rotate_2d(ob_dir, math.radians(aim_offset_deg))
 
     e_bb = table.ball_ball_restitution
     mu_bb = table.ball_ball_friction

@@ -14,15 +14,25 @@ import { AngleDiagram } from '../components/AngleDiagram'
 import { PositionTarget } from '../components/PositionTarget'
 import { StrikeInsert } from '../components/StrikeInsert'
 import { CutView } from '../components/CutView'
+import { ShotViews } from '../components/ShotViews'
 import { fetchPlan, fetchCueOptions } from '../api/client'
 import { useSession } from '../store/session'
 import type { PillarPlan, RankedOption } from '../types/pillars'
+import { BALL_COLORS } from '../types/pillars'
 
 const DIFFICULTY_COLOR: Record<string, string> = {
   stock: '#22c55e',
   comfortable: '#84cc16',
   tricky: '#f59e0b',
   hard: '#ef4444',
+}
+
+/** Map the pace multiplier to a word. */
+function paceLabel(pace: number): string {
+  if (pace < 1.35) return 'soft'
+  if (pace < 1.9) return 'medium'
+  if (pace < 2.45) return 'firm'
+  return 'break'
 }
 
 /** A −5..+5 spin stepper: 0 = center, 1–5 each direction. */
@@ -77,6 +87,7 @@ export function ShotScreen() {
     balls, currentBallId, selectedPocket,
     destinationDescriptor, destinationCoords, bankRails, optimizeSauce,
     manualSpin, setManualSpin, spinV, setSpinV, spinH, setSpinH,
+    pace, setPace, cutOffset, setCutOffset,
     setCurrentPlan, setScreen, setError, error,
   } = useSession()
 
@@ -84,6 +95,7 @@ export function ShotScreen() {
   const [loading, setLoading] = useState(true)
   const [options, setOptions] = useState<RankedOption[]>([])
   const [chosen, setChosen] = useState<RankedOption | null>(null)
+  const [view, setView] = useState<'standing' | 'cut' | 'low'>('standing')
 
   const tableState = {
     table_size_m: [2.54, 1.27] as [number, number],
@@ -112,11 +124,13 @@ export function ShotScreen() {
       sauce: {
         english: 'none', stroke: 'spoon of stun',
         force: 'measured', acceleration: 'controlled',
+        speed_margin: pace,
         ...spinOverride,
       },
       shot_id: `shot-${currentBallId}`,
       bank_rails: bankRails,
       optimize_sauce: manualSpin ? false : optimizeSauce,
+      cut_offset_deg: cutOffset,
     })
       .then((res) => {
         setPlan(res.plan)
@@ -143,7 +157,7 @@ export function ShotScreen() {
         .catch(() => setOptions([]))
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentBallId, selectedPocket, bankRails, optimizeSauce, manualSpin, spinV, spinH])
+  }, [currentBallId, selectedPocket, bankRails, optimizeSauce, manualSpin, spinV, spinH, pace, cutOffset])
 
   if (loading) {
     return (
@@ -174,6 +188,8 @@ export function ShotScreen() {
   const p2 = plan.pillar_II as Record<string, unknown>
   const p3 = plan.pillar_III as Record<string, unknown>
 
+  const objectBallPotted = p2?.object_ball_potted as boolean | undefined
+
   // A chosen ranked option overrides the plan's default sauce for the inserts.
   const english = chosen?.english ?? (p3?.english as Record<string, unknown>)?.sauce_term as string ?? 'none'
   const stroke  = chosen?.stroke  ?? (p3?.stroke  as Record<string, unknown>)?.sauce_term as string ?? 'spoon of stun'
@@ -189,6 +205,19 @@ export function ShotScreen() {
   const destCoords = destCoordsArr && destCoordsArr.length >= 2
     ? { x_m: destCoordsArr[0], y_m: destCoordsArr[1] }
     : undefined
+
+  // Feasibility: where does the cue actually stop vs the requested leave?
+  const feasibility = (() => {
+    if (!destCoords) return null
+    try {
+      const escape = (p2?.escape_route as Record<string, unknown>)?.path_points_m as number[][]
+      const cueFinal = escape?.[escape.length - 1]
+      if (!cueFinal) return null
+      const d = Math.hypot(cueFinal[0] - destCoords.x_m, cueFinal[1] - destCoords.y_m)
+      const zone = d < 0.15 ? 'A' : d < 0.3 ? 'B' : 'C'
+      return { d, zone }
+    } catch { return null }
+  })()
 
   const contactPoint = p2?.contact_point as Record<string, unknown> | undefined
   const cutMagnitude = (contactPoint?.cut_angle_deg as number) ?? 0
@@ -230,12 +259,40 @@ export function ShotScreen() {
         <span className="text-xs text-gray-700">{speedLabel}</span>
       </div>
 
-      {/* Visual panels — angle diagram spans, then 3 inserts */}
+      {/* View switcher */}
+      <div className="flex gap-1 px-3 pt-2">
+        {([['standing', 'STANDING'], ['cut', 'THE CUT'], ['low', 'LOW AIM']] as const).map(([v, label]) => (
+          <button
+            key={v}
+            onClick={() => setView(v)}
+            className={`flex-1 py-1.5 rounded text-[10px] tracking-widest border transition ${
+              view === v ? 'border-[#facc15] text-[#facc15] bg-[#facc1510]' : 'border-gray-800 text-gray-500'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Visual panels */}
       <div className="px-3 py-2 space-y-2">
-        {/* Angle diagram — full width */}
+        {/* Main view — top-down or a perspective angle */}
         <div className="flex flex-col items-center gap-1">
-          <AngleDiagram plan={plan} balls={balls} />
-          <span className="text-[9px] text-gray-600 tracking-widest">THE PATH</span>
+          {view === 'standing' ? (
+            <AngleDiagram plan={plan} balls={balls} />
+          ) : (
+            <ShotViews
+              view={view}
+              cutAngleDeg={cutAngleDeg}
+              contactFraction={contactFraction ?? 0.5}
+              ballColor={BALL_COLORS[currentBallId ?? '8'] ?? '#facc15'}
+              ballId={currentBallId ?? '8'}
+              potted={objectBallPotted}
+            />
+          )}
+          <span className="text-[9px] text-gray-600 tracking-widest">
+            {view === 'standing' ? 'THE PATH' : view === 'cut' ? 'LOOKING AT THE POCKET' : "SHOOTER'S EYE"}
+          </span>
         </div>
 
         {/* Three inserts: cut · position · strike */}
@@ -266,6 +323,20 @@ export function ShotScreen() {
           </div>
         </div>
       </div>
+
+      {/* Feasibility — does the chosen sauce land the cue on the leave? */}
+      {feasibility && (
+        <div className="mx-4 mt-2 flex items-center justify-between px-3 py-2 rounded border border-gray-800">
+          <span className="text-[10px] text-gray-500 tracking-widest">LEAVE FEASIBILITY</span>
+          <span
+            className="text-[11px] font-bold tracking-widest"
+            style={{ color: feasibility.zone === 'A' ? '#22c55e' : feasibility.zone === 'B' ? '#f59e0b' : '#ef4444' }}
+          >
+            {feasibility.zone === 'A' ? '✓ ON THE LEAVE' : feasibility.zone === 'B' ? '~ B-ZONE' : '✗ OFF'}
+            {' '}({(feasibility.d * 100).toFixed(0)}cm)
+          </span>
+        </div>
+      )}
 
       {/* Manual spin control */}
       <div className="mx-4 mt-2">
@@ -299,6 +370,48 @@ export function ShotScreen() {
             />
           </div>
         )}
+
+        {/* Pace slider — drag to set power */}
+        <div className="mt-3">
+          <div className="flex justify-between items-center mb-1">
+            <span className="text-[10px] text-gray-500 tracking-widest">PACE</span>
+            <span className="text-[10px] text-[#facc15] font-mono">{paceLabel(pace)}</span>
+          </div>
+          <input
+            type="range"
+            min={1.05} max={3} step={0.05}
+            value={pace}
+            onChange={(e) => setPace(parseFloat(e.target.value))}
+            className="w-full accent-[#facc15] h-6"
+          />
+          <div className="flex justify-between text-[8px] text-gray-600 tracking-widest -mt-1">
+            <span>SOFT</span><span>MEDIUM</span><span>FIRM</span><span>BREAK</span>
+          </div>
+        </div>
+
+        {/* Cheat the pocket — degree-by-degree, until it misses */}
+        <div className="mt-3">
+          <div className="flex justify-between items-center mb-1">
+            <span className="text-[10px] text-gray-500 tracking-widest">CHEAT THE POCKET</span>
+            {objectBallPotted === false ? (
+              <span className="text-[10px] font-bold text-red-500 tracking-widest">✗ MISS</span>
+            ) : objectBallPotted === true ? (
+              <span className="text-[10px] font-bold text-green-500 tracking-widest">✓ POTS</span>
+            ) : null}
+          </div>
+          <input
+            type="range"
+            min={-8} max={8} step={1}
+            value={cutOffset}
+            onChange={(e) => setCutOffset(parseInt(e.target.value))}
+            className={`w-full h-6 ${objectBallPotted === false ? 'accent-red-500' : 'accent-green-500'}`}
+          />
+          <div className="flex justify-between text-[8px] text-gray-600 tracking-widest -mt-1">
+            <span>← LEFT JAW</span>
+            <span className="font-mono">{cutOffset > 0 ? `+${cutOffset}` : cutOffset}°</span>
+            <span>RIGHT JAW →</span>
+          </div>
+        </div>
       </div>
 
       {/* Ranked stroke options — exact-target shots only */}

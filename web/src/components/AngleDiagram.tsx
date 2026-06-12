@@ -7,6 +7,7 @@
 
 import { TableView } from './TableView'
 import type { BallState, Pocket } from '../types/pillars'
+import { POCKET_POSITIONS } from '../types/pillars'
 
 interface Props {
   plan: Record<string, unknown>
@@ -107,6 +108,24 @@ export function AngleDiagram({ plan, balls, className = '' }: Props) {
     if (pts?.length) bankPath = pts.map((p) => [p[0], p[1]])
   } catch { /* no bank */ }
 
+  // Direct shot: prefer the engine's *simulated* OB path (reflects pocket
+  // cheating / a miss); fall back to the geometric OB→pocket line.
+  let objectBallPath: [number, number][] | undefined
+  if (!bankPath) {
+    const p2 = plan.pillar_II as Record<string, unknown>
+    const simPath = p2?.object_ball_path_m as [number, number][] | undefined
+    if (simPath?.length) {
+      objectBallPath = simPath.map((p) => [p[0], p[1]])
+    } else {
+      const target = balls.find((b) => b.id === targetId)
+      const pocketName = pocket as Pocket | undefined
+      const pocketXY = pocketName ? POCKET_POSITIONS[pocketName] : undefined
+      if (target && pocketXY) {
+        objectBallPath = [[target.x_m, target.y_m], [pocketXY[0], pocketXY[1]]]
+      }
+    }
+  }
+
   return (
     <TableView
       balls={balls}
@@ -116,6 +135,7 @@ export function AngleDiagram({ plan, balls, className = '' }: Props) {
       destinationZone={destinationZone}
       landingCone={landingCone}
       bankPath={bankPath}
+      objectBallPath={objectBallPath}
       selectedPocket={pocket}
       highlightBalls={highlightBalls}
       className={className}

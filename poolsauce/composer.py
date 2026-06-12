@@ -75,6 +75,7 @@ def compose_pillar_plan(
     timestamp: str | None = None,
     doctrine_line: str | None = None,
     optimize_for_destination: bool = False,
+    cut_offset_deg: float = 0.0,
 ) -> dict[str, Any]:
     """Build a full Pillar I-III document.
 
@@ -104,6 +105,7 @@ def compose_pillar_plan(
         target_ball_id=intention.target_ball_id,
         pocket=intention.pocket,
         cue_ball_id=cue_ball_id,
+        aim_offset_deg=cut_offset_deg,
     )
 
     # Position optimization — let the engine recommend the spin/speed that
@@ -208,6 +210,20 @@ def compose_pillar_plan(
         },
         "table_state": _build_table_state(state, intention.target_ball_id, cue_ball_id),
     }
+
+    # Object-ball outcome: did it drop, and where does it actually travel?
+    # The OB leaves along the (possibly cheated) target direction; we draw it
+    # the pocket distance so cheating walks the endpoint across the jaws.
+    ob = state.get_ball(intention.target_ball_id)
+    ob_end = ob.position + plan.ob_direction * plan.ob_to_pocket_distance_m
+    output["pillar_II"]["cut_offset_deg"] = cut_offset_deg
+    output["pillar_II"]["object_ball_potted"] = (
+        intention.target_ball_id in sim_result.pocketed
+    )
+    output["pillar_II"]["object_ball_path_m"] = [
+        [float(ob.position[0]), float(ob.position[1])],
+        [float(ob_end[0]), float(ob_end[1])],
+    ]
 
     if timestamp is not None:
         output["timestamp"] = timestamp

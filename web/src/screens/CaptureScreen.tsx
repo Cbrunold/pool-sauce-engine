@@ -15,54 +15,87 @@ import { BALL_COLORS, PLACEMENT_ORDER } from '../types/pillars'
 
 type Mode = 'menu' | 'camera' | 'manual'
 
+/** Read the persisted last error (survives a reload), for on-screen diagnosis. */
+function readLastError(): { label: string; msg: string } | null {
+  try {
+    const raw = localStorage.getItem('pse_last_error')
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
 /**
  * Downscale an image File to a JPEG Blob with a max dimension, using the
  * browser's native decoder (handles HEIC on iOS) and a canvas re-encode.
  * Keeps uploads small and guarantees a format OpenCV can read.
  */
 async function downscaleToJpeg(file: File, maxDim: number): Promise<File> {
-  const bitmap = await createImageBitmap(file).catch(() => null)
-  let width: number
-  let height: number
-  let source: CanvasImageSource
-
-  if (bitmap) {
-    width = bitmap.width
-    height = bitmap.height
-    source = bitmap
-  } else {
-    // Fallback: decode via <img> (covers browsers without createImageBitmap HEIC support)
-    const url = URL.createObjectURL(file)
-    try {
-      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-        const el = new Image()
-        el.onload = () => resolve(el)
-        el.onerror = () => reject(new Error('Could not decode the photo.'))
-        el.src = url
+  // Memory-safe path: ask the decoder to resize *while* decoding, so a 12MP
+  // phone photo never materializes at full resolution (which crashes/reloads
+  // iOS Safari under memory pressure). resizeWidth caps the width; height
+  // scales proportionally. We only downscale, never upscale.
+  let bitmap: ImageBitmap | null = null
+  try {
+    const probe = await createImageBitmap(file)
+    const longest = Math.max(probe.width, probe.height)
+    if (longest <= maxDim) {
+      bitmap = probe
+    } else {
+      const scale = maxDim / longest
+      const rw = Math.round(probe.width * scale)
+      const rh = Math.round(probe.height * scale)
+      probe.close()
+      bitmap = await createImageBitmap(file, {
+        resizeWidth: rw,
+        resizeHeight: rh,
+        resizeQuality: 'medium',
       })
-      width = img.naturalWidth
-      height = img.naturalHeight
-      source = img
-    } finally {
-      URL.revokeObjectURL(url)
     }
+  } catch {
+    bitmap = null
   }
 
-  const scale = Math.min(1, maxDim / Math.max(width, height))
-  const w = Math.round(width * scale)
-  const h = Math.round(height * scale)
+  let source: CanvasImageSource
+  let w: number
+  let h: number
+  let cleanup: (() => void) | null = null
+
+  if (bitmap) {
+    source = bitmap
+    w = bitmap.width
+    h = bitmap.height
+    cleanup = () => bitmap!.close()
+  } else {
+    // Fallback for decoders without createImageBitmap resize support.
+    const url = URL.createObjectURL(file)
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image()
+      el.onload = () => resolve(el)
+      el.onerror = () => reject(new Error('Could not decode the photo.'))
+      el.src = url
+    })
+    const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight))
+    w = Math.round(img.naturalWidth * scale)
+    h = Math.round(img.naturalHeight * scale)
+    source = img
+    cleanup = () => URL.revokeObjectURL(url)
+  }
 
   const canvas = document.createElement('canvas')
   canvas.width = w
   canvas.height = h
   const ctx = canvas.getContext('2d')
-  if (!ctx) throw new Error('Canvas not available for image processing.')
+  if (!ctx) { cleanup?.(); throw new Error('Canvas not available for image processing.') }
   ctx.drawImage(source, 0, 0, w, h)
-  if (bitmap) bitmap.close()
+  cleanup?.()
 
   const blob = await new Promise<Blob | null>((resolve) =>
     canvas.toBlob(resolve, 'image/jpeg', 0.85)
   )
+  // Release the canvas backing store promptly.
+  canvas.width = 0
+  canvas.height = 0
   if (!blob) throw new Error('Could not encode the photo.')
   return new File([blob], 'table.jpg', { type: 'image/jpeg' })
 }
@@ -73,7 +106,8 @@ export function CaptureScreen() {
   const [loading, setLoading] = useState(false)
   const [detected, setDetected] = useState<DetectedBall[]>([])
   const [localBalls, setLocalBalls] = useState<BallState[]>([])
-  const fileRef = useRef<HTMLInputElement>(null)
+  const cameraRef = useRef<HTMLInputElement>(null)
+  const uploadRef = useRef<HTMLInputElement>(null)
 
   // ---- Camera mode ----
 
@@ -84,7 +118,7 @@ export function CaptureScreen() {
       // Downscale + transcode to JPEG before upload. Phone photos are 12MP+
       // and often HEIC (which OpenCV can't decode); a ~1600px JPEG uploads
       // fast and the vision pipeline handles it in well under a second.
-      const prepared = await downscaleToJpeg(file, 1600)
+      const prepared = await downscaleToJpeg(file, 1280)
       const result = await fetchDetect(prepared)
       const balls: BallState[] = result.balls
         .filter((b) => b.id !== null)
@@ -92,7 +126,14 @@ export function CaptureScreen() {
       setDetected(result.balls)
       setLocalBalls(balls)
     } catch (e) {
-      setError((e as Error).message || 'Could not read the photo. Try manual placement.')
+      const msg = (e as Error).message || 'Could not read the photo. Try manual placement.'
+      try {
+        localStorage.setItem('pse_last_error', JSON.stringify({
+          label: 'detect', msg, at: new Date().toISOString(),
+        }))
+      } catch { /* ignore */ }
+      setError(msg)
+      setMode('menu')
     } finally {
       setLoading(false)
     }
@@ -128,8 +169,21 @@ export function CaptureScreen() {
   // ---- Render ----
 
   if (mode === 'menu') {
+    const lastError = readLastError()
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-[#0a0a0a] text-white px-6 gap-6">
+        {lastError && (
+          <div className="w-full max-w-xs p-3 rounded border border-red-700/50 bg-red-900/15 text-left">
+            <p className="text-[10px] text-red-400 tracking-widest mb-1">LAST ERROR ({lastError.label})</p>
+            <p className="text-[11px] text-gray-300 break-words">{lastError.msg}</p>
+            <button
+              className="mt-2 text-[10px] text-gray-500"
+              onClick={() => { localStorage.removeItem('pse_last_error'); setMode('manual'); setMode('menu') }}
+            >
+              dismiss
+            </button>
+          </div>
+        )}
         <div className="text-center mb-4">
           <h1 className="text-2xl font-bold tracking-widest text-[#facc15]">RŌ</h1>
           <p className="text-xs text-gray-500 mt-1 tracking-widest uppercase">Pool Sauce Engine</p>
@@ -137,9 +191,15 @@ export function CaptureScreen() {
         <p className="text-sm text-gray-400 text-center">Set the table. Choose your method.</p>
         <button
           className="w-full max-w-xs py-4 rounded border border-[#facc15] text-[#facc15] tracking-widest text-sm font-bold hover:bg-[#facc1510] transition"
-          onClick={() => { setMode('camera'); fileRef.current?.click() }}
+          onClick={() => { setMode('camera'); cameraRef.current?.click() }}
         >
-          PHOTOGRAPH THE TABLE
+          TAKE A PHOTO
+        </button>
+        <button
+          className="w-full max-w-xs py-4 rounded border border-gray-500 text-gray-200 tracking-widest text-sm hover:bg-white/5 transition"
+          onClick={() => { setMode('camera'); uploadRef.current?.click() }}
+        >
+          UPLOAD A PHOTO
         </button>
         <button
           className="w-full max-w-xs py-4 rounded border border-gray-600 text-gray-300 tracking-widest text-sm hover:bg-white/5 transition"
@@ -147,14 +207,28 @@ export function CaptureScreen() {
         >
           PLACE BALLS MANUALLY
         </button>
+        {/* Camera capture (rear) */}
         <input
-          ref={fileRef}
+          ref={cameraRef}
           type="file"
           accept="image/*"
           capture="environment"
           className="hidden"
           onChange={(e) => {
             const f = e.target.files?.[0]
+            e.target.value = ''
+            if (f) handleImageFile(f)
+          }}
+        />
+        {/* Library / file upload */}
+        <input
+          ref={uploadRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0]
+            e.target.value = ''
             if (f) handleImageFile(f)
           }}
         />

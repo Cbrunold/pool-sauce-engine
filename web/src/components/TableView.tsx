@@ -29,6 +29,7 @@ interface Props {
     color: string
   }
   bankPath?: [number, number][]   // object-ball zig-zag (start, rails…, pocket)
+  objectBallPath?: [number, number][]   // direct object-ball path → pocket
   selectedPocket?: Pocket | null
   onBallMove?: (id: string, x_m: number, y_m: number) => void
   onTableTap?: (x_m: number, y_m: number) => void
@@ -45,6 +46,7 @@ export function TableView({
   destinationZone,
   landingCone,
   bankPath,
+  objectBallPath,
   selectedPocket,
   onBallMove,
   onTableTap,
@@ -133,10 +135,39 @@ export function TableView({
     >
       {/* Rail / border */}
       <rect
-        x={FELT_X - 8} y={FELT_Y - 8}
-        width={FELT_W + 16} height={FELT_H + 16}
+        x={FELT_X - 12} y={FELT_Y - 12}
+        width={FELT_W + 24} height={FELT_H + 24}
         rx={6} fill="#2a1a0a" stroke="#4a3010" strokeWidth={2}
       />
+
+      {/* Rail diamonds — long rails by eighths (skip side pocket), short
+          rails by quarters. The standard sight markers for reading the table. */}
+      {(() => {
+        const r = 3.4
+        const off = 6  // center of the rail strip, outside the felt edge
+        const diamond = (cx: number, cy: number, key: string) => (
+          <polygon
+            key={key}
+            points={`${cx},${cy - r} ${cx + r},${cy} ${cx},${cy + r} ${cx - r},${cy}`}
+            fill="#e7d9b0"
+            opacity={0.9}
+          />
+        )
+        const out: React.ReactNode[] = []
+        // Long rails: 1/8 … 7/8 of length, skipping 4/8 (the side pocket).
+        for (const n of [1, 2, 3, 5, 6, 7]) {
+          const sy = FELT_Y + FELT_H - (n / 8) * FELT_H
+          out.push(diamond(FELT_X - off, sy, `L${n}`))
+          out.push(diamond(FELT_X + FELT_W + off, sy, `R${n}`))
+        }
+        // Short rails: quarters of width.
+        for (const n of [1, 2, 3]) {
+          const sx = FELT_X + (n / 4) * FELT_W
+          out.push(diamond(sx, FELT_Y - off, `T${n}`))
+          out.push(diamond(sx, FELT_Y + FELT_H + off, `B${n}`))
+        }
+        return <g>{out}</g>
+      })()}
 
       {/* Felt */}
       <rect
@@ -187,23 +218,32 @@ export function TableView({
         )
       })()}
 
-      {/* Aim line */}
+      {/* Object-ball path → pocket (direct shots): solid amber, the ball you pot */}
+      {objectBallPath && objectBallPath.length > 1 && (() => {
+        const pts = objectBallPath.map(([x, y]) => toSvg(x, y).join(',')).join(' ')
+        return (
+          <polyline points={pts}
+            fill="none" stroke="#facc15" strokeWidth={2.5} opacity={0.85}
+            strokeLinecap="round" />
+        )
+      })()}
+
+      {/* Cue-ball path — dotted white. Pre-contact (aim) + post-contact (escape). */}
       {aimLine && (() => {
         const [x1, y1] = toSvg(...aimLine.from)
         const [x2, y2] = toSvg(...aimLine.to)
         return (
           <line x1={x1} y1={y1} x2={x2} y2={y2}
-            stroke="#facc15" strokeWidth={1.5} strokeDasharray="6 3" opacity={0.8} />
+            stroke="#f1f5f9" strokeWidth={1.5} strokeDasharray="2 4"
+            strokeLinecap="round" opacity={0.9} />
         )
       })()}
-
-      {/* Escape route */}
       {escapeRoute && escapeRoute.length > 1 && (() => {
         const pts = escapeRoute.map(([x, y]) => toSvg(x, y).join(',')).join(' ')
         return (
           <polyline points={pts}
-            fill="none" stroke="#38bdf8" strokeWidth={1.5}
-            strokeDasharray="4 4" opacity={0.7} />
+            fill="none" stroke="#f1f5f9" strokeWidth={1.5}
+            strokeDasharray="2 4" strokeLinecap="round" opacity={0.9} />
         )
       })()}
 

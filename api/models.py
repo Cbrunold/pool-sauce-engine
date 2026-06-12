@@ -63,6 +63,8 @@ class PlanRequest(BaseModel):
     # When true and a destination coordinate is given, the engine derives the
     # spin/speed that lands the cue on the leave instead of defaulting to stun.
     optimize_sauce: bool = False
+    # Cheat the pocket: rotate the aim by this many degrees (± = either jaw).
+    cut_offset_deg: float = 0.0
 
 
 class PlanResponse(BaseModel):

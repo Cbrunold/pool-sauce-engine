@@ -37,6 +37,14 @@ export interface SessionState {
   spinH: number
   setSpinH: (n: number) => void
 
+  // Pace: multiplier on the minimum cue speed (1.05 = just enough .. 3.0 = break)
+  pace: number
+  setPace: (n: number) => void
+
+  // Cheat the pocket: aim offset in degrees (− left jaw .. + right jaw)
+  cutOffset: number
+  setCutOffset: (n: number) => void
+
   // Shot intention overrides
   selectedPocket: Pocket | null
   setSelectedPocket: (p: Pocket | null) => void
@@ -97,6 +105,12 @@ export const useSession = create<SessionState>((set, get) => ({
   spinH: 0,
   setSpinH: (spinH) => set({ spinH: Math.max(-5, Math.min(5, spinH)) }),
 
+  pace: 1.8,
+  setPace: (pace) => set({ pace: Math.max(1.05, Math.min(3.0, pace)) }),
+
+  cutOffset: 0,
+  setCutOffset: (cutOffset) => set({ cutOffset: Math.max(-10, Math.min(10, cutOffset)) }),
+
   selectedPocket: null,
   setSelectedPocket: (selectedPocket) => set({ selectedPocket }),
   destinationDescriptor: 'center table for next shot',
@@ -128,6 +142,8 @@ export const useSession = create<SessionState>((set, get) => ({
       manualSpin: false,
       spinV: 0,
       spinH: 0,
+      pace: 1.8,
+      cutOffset: 0,
       error: null,
     }),
 }))
