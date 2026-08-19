@@ -10,3 +10,7 @@ build/
 dist/
 .DS_Store
 .env
+
+# Runtime artifacts
+state.json
+plan.json
