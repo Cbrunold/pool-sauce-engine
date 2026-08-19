@@ -240,7 +240,7 @@
       "type": "object",
       "title": "PILLAR V — THE DEBRIEF",
       "description": "Six-point review. Populated only after user reports outcome. Overlay: red/green zone shading, intended-vs-actual arrows.",
-      "required": ["zone_landing", "correct_side", "spin_review", "pace_control", "risk_zones", "mastery_one_percent"],
+      "required": ["zone_landing", "correct_side", "spin_review", "pace_control", "risk_zones_crossed", "mastery_one_percent"],
       "properties": {
         "zone_landing": {
           "type": "object",
