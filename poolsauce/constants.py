@@ -14,8 +14,36 @@ CLOTH_SLIDING_FRICTION: float = 0.2
 CLOTH_ROLLING_FRICTION: float = 0.01
 CLOTH_SPINNING_FRICTION: float = 0.044
 
-# Cushion — fraction of kinetic energy retained on rail contact.
+# Cushion — Marlow-lite rebound model.
+#
+# CUSHION_EFFICIENCY is the normal-velocity restitution (magnitude kept after
+# the bounce). CUSHION_TANGENTIAL_* drive a pace-dependent tangential retention:
+# high-pace banks shorten, low-pace widen. CUSHION_SIDE_ENGLISH_* govern how
+# vertical-axis spin (side english) couples into tangential rebound velocity —
+# running english widens, reverse shortens — and how much of that spin is lost
+# to rail friction in the process.
 CUSHION_EFFICIENCY: float = 0.75
+CUSHION_TANGENTIAL_RETENTION: float = 0.90
+CUSHION_TANGENTIAL_PACE_FALLOFF: float = 0.15
+CUSHION_TANGENTIAL_RETENTION_MIN: float = 0.50
+CUSHION_SIDE_ENGLISH_COUPLING: float = 0.25
+CUSHION_SIDE_ENGLISH_LOSS: float = 0.30
 
-# Ball-to-ball coefficient of restitution.
+# Ball-to-ball collision.
+#
+# BALL_BALL_RESTITUTION is the coefficient of restitution along the line of
+# centers (~0.92 for phenolic balls under tournament conditions).
+# BALL_BALL_FRICTION is the sliding friction coefficient between ball surfaces
+# at contact; it drives both cut-induced and spin-induced throw. Typical
+# published values sit around 0.06 for clean polished balls.
 BALL_BALL_RESTITUTION: float = 0.92
+BALL_BALL_FRICTION: float = 0.06
+
+# Cue-ball deflection ("squirt"). Side english strikes the ball off-center,
+# and the cue's endmass throws the cue ball off the stick's aim line, toward
+# the side OPPOSITE the english. Modeled by the natural pivot length: the
+# distance behind the tip where the cue's centerline, extended, crosses the
+# actual cue-ball path. tan(squirt_angle) = tip_offset / pivot_length.
+# Typical low-deflection-to-stiff range is ~9-14 in; 11 in ≈ 0.279 m is a
+# common all-round value. Per-cue calibration knob.
+SQUIRT_PIVOT_LENGTH_M: float = 0.279

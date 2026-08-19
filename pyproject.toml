@@ -10,6 +10,16 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+api = [
+  "fastapi>=0.111",
+  "uvicorn[standard]>=0.29",
+  "python-multipart>=0.0.9",
+  "opencv-python-headless>=4.9",
+  "pydantic>=2.6",
+]
+
+[project.scripts]
+poolsauce = "poolsauce.cli:main"
 
 [build-system]
 requires = ["hatchling"]
