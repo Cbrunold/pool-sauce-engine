@@ -11,7 +11,12 @@ TABLE_9FT_WIDTH_M: float = 1.27
 
 # Worsted tournament cloth, typical values.
 CLOTH_SLIDING_FRICTION: float = 0.2
-CLOTH_ROLLING_FRICTION: float = 0.01
+# 0.025, not the 0.01 often quoted. 0.01 puts rolling deceleration at 0.098 m/s2,
+# which has a ball leaving at 1 m/s still travelling after five metres and ten
+# seconds — around twice as far and twice as long as a ball on this cloth
+# actually goes. At 0.025 the deceleration is 0.245 m/s2, a ball at 1 m/s runs
+# about two metres, and a lag arrives when a lag arrives.
+CLOTH_ROLLING_FRICTION: float = 0.025
 CLOTH_SPINNING_FRICTION: float = 0.044
 
 # Cushion — Marlow-lite rebound model.
